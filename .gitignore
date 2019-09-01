@@ -37,3 +37,8 @@ rsconnect/
 
 # Apple filesystem
 .DS_Store
+
+# Large Datasets
+datasets/201902.txt
+datasets/201904.txt
+datasetsOri/paquete_premium.txt
