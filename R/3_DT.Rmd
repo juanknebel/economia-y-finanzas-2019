@@ -1,0 +1,550 @@
+---
+title: "Segundo paso: Decision Tree"
+author: "Alejandro Bolaños"
+date: "2018-09-02"
+version: 0.7
+output: 
+  html_document:
+    theme: spacelab
+    highlight: monochrome
+    df_print: paged
+#    toc: true
+#    toc_depth: 2
+
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+> “If you torture the data long enough, it will confess.” --- Ronald Coase
+
+Como vimos en el repaso sobre árboles de decisión, es importante para no sobreajustar utilizar diferentes muestras para medir la calidad del modelo. Empecemos primero con las muestras del tipo OOS, es decir, separando parte de nuestros datos que vamos a usar para entrenar. Podemos describir al menos 3 metodologías:
+
+* Train/Test
+* Cross Validation
+* Monte Carlo Cross Validation
+
+Haremos foco en la última. Pero, para empezar a generar las muestras aleatórias, debemos contar un con conjunto de `semillas` para poder reproducir las pruebas.
+
+Quizás sea un poco un exageración, pero tomemos un conjunto de números 100% aleatorios (algo que no se puede lograr por medio de algoritmos). Tomemos 100:
+
+```{r}
+
+rm( list=ls() )
+gc()
+
+```
+
+```{r}
+library(data.table)
+
+x <- fread("https://www.random.org/integer-sets/?sets=1&num=100&min=100000&max=1000000&commas=on&order=index&format=plain&rnd=new")
+
+v_semillas <- as.vector(unlist(x))
+v_semillas
+```
+
+Veamos cuantos números primos obtuvimos en esta lista de números aleatorios:
+
+```{r}
+# install.packages("numbers")
+library(numbers)
+v_semillas_primos <- v_semillas[isPrime(v_semillas)]
+
+v_semillas_primos
+```
+
+Ejercicio: Pruebe sucesivamente bajar de forma aleatoria números entre 100.000 y 1.000.000. Note que siempre hay un porcentaje similiar de números primos. ¿Cualés son los motivos de este embrujo? Acérquese ligeramente de la Teoría de números. Tenga cuidado, quizás lo asuste y salga corriendo... quizás lo enamoré y no le deje volver al data science.
+
+Primero, levantemos nuestro conjunto de datos y construyamos la clase binaria sobre la que trabajaremos:
+
+```{r}
+febrero  <-  fread("../cloud/cloud1/datasets/201902.txt", header=TRUE, sep="\t")
+
+febrero[, clase_binaria := ifelse(clase_ternaria == "BAJA+2", "1", "0")]
+
+# Sacamos la clase ternaria
+febrero[, clase_ternaria:= NULL]
+
+# Lo mismo con el ID del cliente
+febrero[, numero_de_cliente:= NULL]
+
+```
+
+Y simplemente cortamos en Train/Test nuestro conjunto de datos:
+
+```{r}
+library(caret)
+semilla <- v_semillas_primos[1]
+set.seed(semilla)
+inTraining <- createDataPartition( febrero[, get("clase_binaria")], p = 0.70, list = FALSE)
+febrero_training  <-  febrero[  inTraining, ]
+febrero_testing   <-  febrero[ -inTraining, ]
+```
+
+Nuevamente generamos un modelo, pero ahora solo para el entrenamiento, aplicamos el modelo en el conjunto de prueba:
+
+```{r}
+library(rpart)
+library( "rpart.plot" )
+
+modelo_oos <- rpart(clase_binaria ~ ., data = febrero_training,   cp=0.001,  xval=0 )
+
+```
+
+Y aplicamos la predicción con el modelo generado, sobre las muestras que particionamos anteriormente:
+
+```{r}
+
+pred_training <- predict(modelo_oos, febrero_training , type = "prob")
+pred_testing <- predict(modelo_oos, febrero_testing , type = "prob")
+
+pred_testing <- as.data.frame(pred_testing)
+pred_training <- as.data.frame(pred_training)
+head(pred_training)
+```
+
+Ahora, en vez de calcular a mano nuestras métricas, usemos el soporte de las librerías, de esta forma:
+
+```{r}
+library( "ROCR" )
+
+# Train
+roc_train <- ROCR::prediction(  pred_training$`1`, febrero_training$clase_binaria, label.ordering=c( 0, 1))
+auc_train  <-  ROCR::performance( roc_train,"auc");
+roc_train <- ROCR::performance(roc_train,"tpr","fpr")
+
+# Test
+roc_test <- ROCR::prediction(  pred_testing$`1`, febrero_testing$clase_binaria, label.ordering=c( 0, 1))
+auc_test  <-  ROCR::performance( roc_test,"auc");
+roc_test <- ROCR::performance(roc_test,"tpr","fpr")
+
+plotdat_train <- data.frame(fpr=roc_train@x.values[[1]],tpr=roc_train@y.values[[1]],CUT=roc_train@alpha.values[[1]],etiqueta="TRAIN")
+plotdat_test <- data.frame(fpr=roc_test@x.values[[1]],tpr=roc_test@y.values[[1]],CUT=roc_test@alpha.values[[1]],etiqueta="TEST")
+
+plotdat <- rbind(plotdat_train,plotdat_test)
+
+ggplot(plotdat, aes(x=fpr,y=tpr)) + 
+  geom_abline(intercept=0,slope=1) +
+  geom_line(aes(colour = etiqueta), size = 1.2)
+
+```
+
+Y obtenemos el `AUC` de cada conjunto:
+
+```{r}
+# El de entrenamiento
+auc_train@y.values
+# El de test
+auc_test@y.values
+```
+
+`ROCR` cuenta con muchas métricas. Explore la librería y vea si le puede ser útil como otras métricas. 
+
+Es interesante ver que como intuíamos en la clase pasada, hay presencia de *overfitting* en nuestro árbol. Veamos como afecta a la ganancia este fenómeno. Definamos una función para el cálculo de ganancia que nos acompañe en resto de los cálculos (manteniendo el punto de corte en 0.025... por ahora):
+
+```{r}
+
+fganancia = function(probabilidades, clase, punto_corte=0.025) {
+  return(sum(
+    (probabilidades >= punto_corte) * ifelse( clase == "1", 19500, -500 ))
+  )
+}
+
+# Ganancia en el conjunto de entrenamiento
+fganancia(pred_training$`1`, febrero_training$clase_binaria)
+
+# Ganancia en el conjunto de prueba
+fganancia(pred_testing$`1`, febrero_testing$clase_binaria)
+```
+
+Ahhh claro, como las cantidades de los conjuntos de datos son distintas, igual van a ser sus ganancias. Normalicemos las ganancias en función de su proporción:
+
+```{r}
+# Ganancia en el conjunto de entrenamiento
+fganancia(pred_training$`1`, febrero_training$clase_binaria)/0.7
+
+# Ganancia en el conjunto de prueba
+fganancia(pred_testing$`1`, febrero_testing$clase_binaria)/0.3
+
+```
+
+Observamos que el overfitting se observa en la ganancia, y hasta se podría intuir que le afecta más a este indicador que a las `AUC`.
+
+Pero antes de ver como podemos mejorar el *overfitting*, veamos otro fenómeno interesante. Modelemos, pero probando distintas semillas.
+
+En términos biológicos, de dos semillas obtenemos dos árboles parecidos pero no iguales. ¿Sucederá lo mismo en nuestros modelos? No hay más de probar...
+
+```{r}
+
+resultados <- data.table()
+
+for( s in  v_semillas_primos[1:5] ) {
+
+    set.seed( s )
+    inTraining <- createDataPartition( febrero[, get("clase_binaria")], p = 0.70, list = FALSE)
+    febrero_training  <-  febrero[  inTraining, ]
+    febrero_testing   <-  febrero[ -inTraining, ]
+    
+    modelo_oos <- rpart(clase_binaria ~ ., data = febrero_training,   cp=0.001,  xval=0 )
+    
+    # Si deseamos ver que tan distintos son los árboles genererados, descomentar la línea de abajo:
+    # prp( modelo_oos, extra=101, digits=5, branch=1, type=4, varlen=0, faclen=0 )
+    
+    pred_training <- predict(modelo_oos, febrero_training , type = "prob")
+    pred_testing <- predict(modelo_oos, febrero_testing , type = "prob")
+    
+    pred_testing <- as.data.frame(pred_testing)
+    pred_training <- as.data.frame(pred_training)
+
+    # Train
+    roc_train <- ROCR::prediction(  pred_training$`1`, febrero_training$clase_binaria, label.ordering=c( 0, 1))
+    auc_train  <-  ROCR::performance( roc_train,"auc");
+
+    # Test
+    roc_test <- ROCR::prediction(  pred_testing$`1`, febrero_testing$clase_binaria, label.ordering=c( 0, 1))
+    auc_test  <-  ROCR::performance( roc_test,"auc");
+
+    resultados <-   rbindlist(
+                      list(resultados,
+                           data.frame(semilla=s,type= "train", 
+                                   auc=unlist(auc_train@y.values),
+                                   ganancia=fganancia(pred_training$`1`, febrero_training$clase_binaria)),
+                           data.frame(semilla=s,type= "test", 
+                                   auc=unlist(auc_test@y.values), 
+                                   ganancia=fganancia(pred_testing$`1`, febrero_testing$clase_binaria))
+                        )
+                    )
+}
+
+resultados
+
+resultados[type == "test",]
+```
+
+Vemos dos importantes fenómenos, el primero es la gran variación de resultados producto de cambiar de semilla!. Además nos damos cuenta que la métrica `AUC` y `GANANCIA` no van de la mano. ¿Por qué?
+
+- ¿Qué debemos hacer? 
+- ¿Elegir la mejor semilla? 
+- ¿Llorar y plantearnos nuestro lugar en el mundo? 
+- ¿Se puede conseguir métricas de mayor confianza frente a este panorama?
+
+Podemos consolidar los resultados simplemente obteniendo sus medias y desvíos.
+
+```{r}
+
+resultados[, list(gan_media=mean(ganancia),gan_min=min(ganancia), gan_max=max(ganancia)) , by=type]
+
+resultados[type=="test", list(gan_media=mean(ganancia)/0.3,
+                              gan_min=min(ganancia)/0.3, 
+                              gan_max=max(ganancia)/0.3) , by=type]
+
+```
+
+
+![STOP](https://upload.wikimedia.org/wikipedia/commons/d/d0/South_africa_stop_sign.png)
+
+Empezaremos a usar con cada vez más frecuencia el uso de funciones. Las funciones tienen muchos buenos atributos, y si ustedes las absorben como herramienta e incluso las generan, estarán un paso adelante. No hay forma de experimentar de forma consistente, sin usar código prolijo. 
+
+Con esta aclaración, empecemos adaptando nuestro trabajo anterior a una forma más programática de pensar. 
+
+Para simplificar nuestro trabajo vamos a definir una función que nos calcule las métricas de nuestro modelo (podremos ampliar la misma más adelante para incluir nuevas)
+
+```{r}
+fmetricas <- function(probs, clases, cutoff=0.025, proporcion=1, label="", type="", semilla=NA) {
+  
+  # AUC
+  binaria  <-  as.numeric(clases == "1")
+  roc_pred <-  ROCR::prediction(probs, binaria, label.ordering=c( 0, 1))
+  auc_t <-  ROCR::performance( roc_pred,"auc"); 
+  auc <- unlist(auc_t@y.values)
+  
+  # Ganancia
+  ganancia <- fganancia(probs, binaria) 
+  
+  # Ganancia normalizada, proyectamos la ganancia según el porcentaje de la muestra.
+  ganancia_normalizada <- ganancia / proporcion
+  
+  return(data.table(label, semilla, type, ganancia, ganancia_normalizada, auc))
+}
+
+```
+
+Y probamos su uso, con los datos de la última ejecución del loop anterior:
+
+```{r}
+
+fmetricas(pred_testing$`1`, febrero_testing$clase_binaria,proporcion=0.3, label="arbol", type="test", semilla=s)
+
+```
+
+- ¿Qué otras métricas, simples o complejas, le puede ayudar para entender y _comparar_ los modelos?
+
+* Haga suya esta función y complete con todo lo que usted necesita saber entender mejor sus experimentos. 
+
+> An economist is an expert who will know tomorrow why the things he predicted yesterday didn't happen today. --- LAURENCE J. PETER
+
+Veamos otro tipo de conjunto de validación, *OOT* o `Out of Time`. A mi entender es el más importante, ya que es el que nos brinda más tranquilidad de que el modelo va a ser robusto en las ejecuciones de los siguientes meses que aún no transcurrieron.
+
+Para lo mismo debemos contemplar que no haya variables del tipo `DATE` o `DATETIME`. ¿Por qué? ¿Afectan estás variables en la performance de un OOS?
+
+Para transformar las variables, el profesor creo un script que nos automatiza el trabajo. _Mirar detenidamente el script y comprenderlo, hacerlo propio._
+
+Ya con los datos transformados vamos añadir un conjunto de datos más para nuestro análisis y validación: `ABRIL`. Seguiremos trabajando con `Febrero` para medir la calidad del modelo con 5 particiones aleatoreas y luego lo entrenaremos con el conjunto total de datos, para aplicar el mismo en el conjunto de datos `OOS` 
+
+Sumaremos en las métricas la capacidad de determinar el punto de corte en función de los conjuntos de validación.
+
+```{r}
+abril <-  fread("../cloud/cloud1/datasets/201904.txt", header=TRUE, sep="\t")
+
+fmetricas <- function(probs, clases, cutoff=0.025, proporcion=1, label="", type="", semilla=NA) {
+  
+  # AUC
+  binaria  <-  as.numeric(clases == "1")
+  roc_pred <-  ROCR::prediction(probs, binaria, label.ordering=c( 0, 1))
+  auc_t <-  ROCR::performance( roc_pred,"auc"); 
+  auc <- unlist(auc_t@y.values)
+  
+  # Ganancia
+  ganancia <- fganancia(probs, binaria) 
+  
+  # Ganancia normalizada, proyectamos la ganancia según el porcentaje de la muestra.
+  ganancia_normalizada <- ganancia / proporcion
+  
+  
+  # Calcular nuevo punto de corte
+  puntos_corte <- sort(unique(probs))
+  ganancia_all <- sapply(puntos_corte, fganancia, probabilidades=probs, clase=clases)
+  ds2 <- as.data.frame(cbind(puntos_corte, ganancia_all))
+  max_punto_corte <- ds2[ which(ds2$ganancia_all ==  max(ds2$ganancia_all)), 1] 
+  
+  return(data.table(label, semilla, type, ganancia, ganancia_normalizada, auc, max_punto_corte))
+
+}
+
+```
+
+Y continuamos con la prueba usando nuestras semillas:
+
+```{r}
+
+resultados <- data.table()
+
+for( s in  v_semillas_primos[1:5] ) {
+    set.seed( s )
+    inTraining <- createDataPartition( febrero[, get("clase_binaria")], p = 0.70, list = FALSE)
+    febrero_training  <-  febrero[  inTraining, ]
+    febrero_testing   <-  febrero[ -inTraining, ]
+    
+    modelo_oot <- rpart(clase_binaria ~ ., data = febrero_training,   cp=0.001,  xval=0 )
+    
+    pred_training <- as.data.frame(predict(modelo_oot, febrero_training , type = "prob"))
+    pred_testing <- as.data.frame(predict(modelo_oot, febrero_testing , type = "prob"))
+    
+    resultados <- rbindlist(list(
+        resultados,
+        fmetricas(pred_testing$`1`, febrero_testing$clase_binaria,proporcion=0.3, label="arbol", type="test", semilla=s),
+        fmetricas(pred_training$`1`, febrero_training$clase_binaria,proporcion=0.7, label="arbol", type="train", semilla=s)
+    ))
+}
+
+resultados
+
+```
+
+```{r}
+
+resultados[type == "test", ]
+
+```
+
+
+Y ahora modelamos con todos los datos y los aplicamos a `Abril`
+```{r}
+
+modelo_oot <- rpart(clase_binaria ~ ., data = febrero,   cp=0.001,  xval=0 )
+abril_pred <- as.data.frame(predict(modelo_oot, abril , type = "prob"))
+
+```
+
+Ahora midamos el resultado del modelo en `ABRIL`, y juguemos con algunos puntos de corte, que vimos obtenemos de los datos de validación:
+
+```{r}
+
+# Agregamos la clase binaria
+abril[, clase_binaria := ifelse(clase_ternaria == "BAJA+2", "1", "0")]
+
+fmetricas(abril_pred$`1`, 
+          abril$clase_binaria,
+          proporcion = 1, 
+          type = "oot", 
+          label="abril", 
+          cutoff = 0.025)
+```
+
+
+- ¿Los estadísticos son cercanos a las métricas de testing de `Febrero`?
+- ¿Ayudó cambiar el punto de corte para obtener más ganancia?
+- ¿Qué tan cerca estuvo del mejor punto de corte posible? 
+
+Hasta ahora solo estamos ajustando un modelo con los parámetros por defecto del mismo, salvo el `cp`. Es importante poder cambiar los parámetros para obtener una mejora en los resultados, y es una buena forma de combatir contra el *overfitting*.
+
+Para esto, miremos cuales son los posibles parámetros que podemos ajustar para estos árboles:
+
+### CP
+
+complexity parameter. Any split that does not decrease the overall lack of fit by a factor of cp is not attempted. For instance, with anova splitting, this means that the overall R-squared must increase by cp at each step. The main role of this parameter is to save computing time by pruning off splits that are obviously not worthwhile. Essentially,the user informs the program that any split which does not improve the fit by cp will likely be pruned off by cross-validation, and that hence the program need not pursue it.
+
+### minsplit
+
+the minimum number of observations that must exist in a node in order for a split to be attempted
+
+### minbucket
+
+the minimum number of observations in any terminal <leaf> node. If only one of minbucket or minsplit is specified, the code either sets minsplit to minbucket*3 or minbucket to minsplit/3, as appropriate.
+
+### maxdepth
+
+Set the maximum depth of any node of the final tree, with the root node counted as depth 0. Values greater than 30 rpart will give nonsense results on 32-bit machines.
+
+* ¿Existen más parámetros que podamos considerar para mejorar la clasificasión del `rpart`?
+
+Sobre estos 4 parámetros vamos a trabajar en esta etapa. ¿Tenemos alguna referencia de cuáles debe ser su valor?. Como no la tenemos vamos a probar varias combinaciones de estos hasta encontrar algún buen conjunto.
+
+```{r}
+
+# Valores a probar para encontrar los parámetros del mejor árbol
+
+vcp  <-  c( 0, 0.0001, 0.0005,  0.001, 0.005, 0.01, 0.1 ) # 7 casos
+vmaxdepth  <-  c(  4, 5, 6, 7,8,9,10, 11, 12 ) # 9 casos
+vminsplit  <-  c(  5, 10, 20, 50, 100, 200, 300, 500, 10000 ) # 9 casos
+# vminbucket va a depender de minsplit y probaremos dos combinaciones de este.
+
+```
+
+Como ya somos más pro, vamos a escribir una función que nos entrene los árboles. Nos va a simplificar nuestros experimentos:
+
+```{r}
+
+fmodelo_rpart <- function (datos, # datos de entrada para modelar
+                            clase, # Variable clase
+                            prop, # Proporción de entrenamiento
+                            semillas, # Semillas a usar
+                            etiqueta, # referencia del modelo
+                            cp =  0.01, ms = 20, mb = 7, md = 30) { # parámetros con valores por default
+  
+  resultados <- data.table()
+  
+  for (s in semillas) {
+    set.seed(s)
+    train_casos <- createDataPartition( datos[, get(clase)], p = prop, list = FALSE)
+    train  <-  datos[  train_casos, ]
+    test   <-  datos[ -train_casos, ]
+    
+    t0 <- Sys.time()
+    modelo <- rpart(formula(paste(clase, "~ .")), data = train, 
+                    xval=0, 
+                    cp=cp, 
+                    minsplit=ms, 
+                    minbucket=mb, 
+                    maxdepth = md )
+    t1 <- Sys.time()
+    
+    train_prediccion <- as.data.frame(predict(modelo, train , type = "prob"))
+    test_prediccion <- as.data.frame(predict(modelo, test , type = "prob"))
+    
+    tiempo <-  as.numeric(  t1 - t0, units = "secs")
+
+    # Sacamos entrenamiento     
+    resultados <- rbindlist(list(
+                    resultados,
+                        cbind (
+                          fmetricas(test_prediccion$`1`,
+                                test[,get(clase)],
+                                proporcion = (1-prop), type = "test",
+                                label=etiqueta, semilla=s),
+                          tiempo, cp, ms, mb, md),
+                        cbind (
+                          fmetricas(train_prediccion$`1`,
+                                train[,get(clase)],
+                                proporcion = prop, type = "train",
+                                label=etiqueta, semilla=s),
+                          tiempo, cp, ms, mb, md)
+    ))
+  }
+  
+  return(resultados)
+}
+```
+
+Lo probamos con un conjunto de entrenamiento pequeño, así no tarda mucho:
+
+```{r}
+
+fmodelo_rpart(febrero, "clase_binaria",prop = 0.1, semillas = v_semillas_primos[1:5], etiqueta = "prueba")
+
+```
+
+Exploramos a continuación la influencia del parámetro `cp` en la construcción de los árboles, para esto, mantendremos todos los valores fijo, y alternaremos distintos valores de `cp`.
+
+```{r eval=FALSE}
+
+resultados_cp <- data.table()
+
+for (v in vcp) {
+  r <- fmodelo_rpart(febrero, "clase_binaria",
+                     prop = 0.7, 
+                     semillas = v_semillas_primos[1:5], 
+                     etiqueta = "vcp",
+                     cp = v)
+  resultados_cp <- rbindlist(list(resultados_cp,r))
+  
+}
+
+# Guardamos el resultado.
+fwrite(resultados_cp,"resultados_cp.csv")
+
+resultados_cp
+
+```
+```{r}
+
+# Evita tener que ejecutar nuevamente el código anterior
+resultados_cp <- fread("resultados_cp.csv")
+resultados_cp
+
+```
+
+Para analizar el parámetro, miremos 3 dimensiones: `AUC`, `Ganancia` y `tiempo` de procesamiento. Empecemos por el `AUC`
+
+```{r}
+
+# Pasamos los párametros a un factor para simplificar la visualización
+resultados_cp$cp <- factor(resultados_cp$cp) 
+resultados_cp$semilla <- factor(resultados_cp$semilla) 
+
+ggplot(resultados_cp[type == "test"],aes(cp,auc,colour = semilla)) + geom_point()
+
+```
+
+Continuamos con la `Ganancia`:
+
+```{r}
+
+ggplot(resultados_cp[type == "test"],aes(cp,ganancia_normalizada,colour = semilla)) + geom_point()
+
+```
+
+Y algo no menor, entender el tiempo que toma cada iteración. Nuestra vida es limita...
+
+```{r}
+
+ggplot(resultados_cp[type == "test"],aes(cp,tiempo,colour = semilla)) + geom_point()
+
+```
+
+- Si tuviera que elegir a ojo, usando las gráficas anteriores, ¿Qué `cp` eligiría? ¿Por qué?
+
+* Repita el experimento con el resto de los parámetros.
+* Sienta en su PC lo que significa en tiempo un Grid Search. Determine cúal es el mejor modelo y aplique el mismo a `abril`.
+* Dude del mejor modelo, y aplique los siguiente 9 a `abril`.

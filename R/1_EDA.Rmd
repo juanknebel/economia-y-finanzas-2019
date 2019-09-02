@@ -120,6 +120,7 @@ Por último evaluemos la tasa de bajas / nuevos
 
 ```{r}
 ds_foto_mes[, "NUEVOS" := TOTAL - (shift(CONTINUA, 1, type="lag") + shift(`BAJA+2`, 1, type="lag"))]
+
 ds_foto_mes[, "R_BAJAS_NUEVOS" := `BAJA+1` / NUEVOS]
 
 ggplot(ds_foto_mes, aes(x = x, y = R_BAJAS_NUEVOS))+
@@ -146,6 +147,7 @@ library(skimr)
 skim_with(numeric = list(median = median, hist = NULL),
           integer = list(median = median, n_unique = n_unique, hist = NULL)
           )
+
 
 desc <- as.data.table(skim_to_wide(abril))
 
@@ -304,7 +306,7 @@ Veamos una interacción de la ganancia con una variable entera. Tomemos *tmovimi
 
 abril[,bin_tmov := cut(tmovimientos_ultimos90dias, 100)]
 ds_tmov <- abril[ , .(n = .N), by = .(bin_tmov,clase_ternaria)]
-
+ds_tmov
 # Elimino la variable generada
 abril[,bin_tmov:=NULL]
 
@@ -356,7 +358,7 @@ Nos resta volver a analizar una variable numérica con relación a la ganancia, 
 ```{r}
 ggplot(abril, aes(x=mcuentas_saldo)) + 
   facet_grid(clase_ternaria ~ .) +
-#  coord_cartesian(xlim=c(0,1000000)) +
+ # coord_cartesian(xlim=c(0,1000000)) +
   geom_density()
 ```
 

@@ -1,0 +1,476 @@
+---
+title: "Primer paso: Decision Tree"
+author: "Alejandro Bolaños"
+date: "2018-08-26"
+version: 0.7
+output: 
+  html_document:
+    theme: spacelab
+    highlight: monochrome
+    df_print: paged
+#    toc: true
+#    toc_depth: 2
+
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+> “We don't want to focus on the trees (or their leaves) at the expense of the forest.” 
+> --- Douglas R. Hofstadter
+
+En este apartado repasaremos concepto ya aprendidos en materias anterior y los aplicaremos en nuestro problema. 
+
+Para refrescar el funcionamiento de los árboles de decisión, miremos el sitio [R2D3](http://www.r2d3.us/), los apartados:
+
+* [Part 1: A Decision Tree](http://www.r2d3.us/visual-intro-to-machine-learning-part-1/)
+* [Part 2: Bias and Variance](http://www.r2d3.us/visual-intro-to-machine-learning-part-2/)
+
+#### Preguntas
+
+- ¿Recuerda la proporción de `BAJA+2` presente?
+- ¿En que puede afectar este desbalanceo al algoritmo?
+
+
+```{r setup , echo=TRUE, results='hide'}
+
+rm( list=ls() )
+gc()
+
+```
+
+Empecemos trabajando con el primer árbol y veamos la salida del mismo. Empezamos a trabajar sobre el mes de `Febrero` (recordando de la clase anterior, que el mismo presentaba sus anomalías)
+
+```{r}
+
+library( "data.table" )
+febrero  <-  fread("../datasets/201902.txt", header=TRUE, sep="\t")
+
+library(rpart)
+library( "rpart.plot" )
+
+modelo   <-  rpart( clase_ternaria ~ .,   data = febrero,   cp=0.005,  xval=0 )
+
+```
+
+Veamos el modelo que nos devolvió:
+
+```{r}
+
+summary(modelo)
+
+```
+
+Muchos datos, veamoslo un poco más reducido:
+
+```{r}
+
+modelo
+
+```
+
+Sería muy tentador poder jugar con los datos del modelo, por esto mismo, vamos a pasar el modelo a una tabla sobre la que podamos jugar. Construimos la siguiente función, y entendemos por la *dura* experiencia, que R, no es el lenguaje más lindo para escribir facilmente código. (maldigo la invención de los rownames!)
+
+```{r}
+
+table_rules <- function (model, ds, target) {
+
+
+  # Tomamos la columna con el target
+  target_vector <- ds[, get(target)]
+  # Tomamos las clases de nuestro target
+  classes <- unique(target_vector)
+  
+  # Tomamos las posicion de las reglas que aplican a los registro de nuestro ds,
+  # y obtenemos las reglas
+  
+  row_leaf <- unique(model$where)
+  row_name_leaf <- as.integer(rownames(model$frame[row_leaf,]))
+  rules <- path.rpart(model, row_name_leaf, pretty = 0, print.it=FALSE)
+  rules_concat <- lapply(rules, 
+                         function(y) paste0(tail(y, n=-1), collapse = " & "))
+  leaves <- data.table(row_frame = row_leaf, 
+                       rules = rules_concat)
+  setkey(leaves,row_frame)
+  
+  # Relacion target ~ hojas
+  leaves_target <- dcast(
+    
+    data.table(
+      target=target_vector, 
+      leaf = model$where), 
+    
+    leaf ~ target, length, 
+    value.var = "target")
+  
+  setkey(leaves_target, leaf) 
+  
+  # Juntamos todo
+  leaves_target <- leaves_target[leaves,nomatch=0]
+  
+  # Sumamos algunas columnas calculadas
+  colnames(leaves_target[,classes,with=FALSE])[apply(leaves_target[,classes,with=FALSE],1,which.max)]
+  # Clase mayoritaria
+  leaves_target[, 
+                y:=colnames(
+                    leaves_target[,classes,with=FALSE]
+                  )[
+                    apply(leaves_target[,classes,with=FALSE],1,which.max)]
+                ]
+  
+  # Cantidad clase mayoritaria
+  leaves_target[, y_n:=unlist(apply(leaves_target[,classes,with=FALSE],1,max))]
+  # Cantidad de elementos de la hoja
+  leaves_target[, n := unlist(Reduce(function(a,b) Map(`+`,a,b), .SD)), .SDcols=classes]
+  # Perdida
+  leaves_target[, loss := n - y_n]
+  
+  # Return
+  leaves_target
+}
+
+```
+
+Aplicamos nuestra función a los datos generados:
+
+```{r}
+
+resultados <- table_rules(modelo, febrero, "clase_ternaria")
+resultados
+# View(resultados) # No siempre visualiza las reglas por ser un string largo.
+
+```
+
+Vemos que el algoritmos sólo eligió en una hoja la clase `BAJA+2`.
+
+Calculemos la ganancia que tiene cada rama. Recuerde 19500 por cada `BAJA+2` y -500 por el resto. 
+
+```{r}
+
+resultados[, ganancia:= `BAJA+2`*19500 - 500*(CONTINUA + `BAJA+1`)]
+
+resultados
+```
+
+
+Si hicieramos caso a las clases del árbol, tendríamos una ganancia de:
+
+```{r}
+
+resultados[y == "BAJA+2", .(ganancia=sum(ganancia), enviados=sum(n), sevan=sum(`BAJA+2`))]
+
+```
+
+Pero, si tomamos todas las ramas que nos dieron ganancia positiva:
+
+```{r}
+
+resultados[ganancia > 0, .(ganancia=sum(ganancia), enviados=sum(n), sevan=sum(`BAJA+2`))]
+
+```
+
+Wow!! Estabamos dejando mucho plata sobre la mesa! Veamos cómo clasificó a las hojas que nos dan ganancia positiva:
+
+```{r}
+
+resultados[ganancia > 0, .N, by=y]
+
+```
+
+Listo, no podemos confiar en la clase, tenemos que avanzar por otro camino!
+
+Entendemos que la diferencia se debe a la cantidad de casos en cada nodo y la proporción de `BAJA+2` en cada hoja.Vamos a trabajar con una nueva clase, una binaria:
+
+`BAJA+2` = evento
+`BAJA+1` o CONTINUA = noevento
+
+Para identificar las probabilidades de `BAJA+2` en forma directa:
+
+```{r}
+
+febrero[, clase_binaria := ifelse(clase_ternaria == "BAJA+2", "evento", "noevento")]
+
+# Sacamos la clase ternaria
+febrero[, clase_ternaria:= NULL]
+
+modelo2   <-  rpart( clase_binaria ~ .,   data = febrero,   cp=0.005,  xval=0 )
+modelo2
+
+```
+
+Apa! No nos abre el árbol!!Esto se debe a los parámetros que le pasamos, la complejidad es muy alta. Veremos en otra clase las parametría del árbol, ahora simplemente bajaremos el parámetro *cp* y con esto obtendremos un árbol que separe las clases.
+
+```{r}
+
+modelo2   <-  rpart( clase_binaria ~ .,   data = febrero,   cp=0.001,  xval=0 )
+
+```
+
+Ahora aplicamos nuestra función para trabajar con los resultados: 
+
+```{r}
+
+resultados2 <- table_rules(modelo2, febrero, "clase_binaria")
+resultados2
+
+```
+
+Revisemos rápidamente la ganancia que obtenemos por clase *evento*
+
+```{r}
+
+resultados2[, ganancia:= evento*19500 - 500*noevento]
+resultados2[y == "evento", .(ganancia=sum(ganancia), enviados=sum(n), sevan=sum(evento))]
+
+```
+
+La ganancia total si tomamos todos los nodos donde la misma es positiva:
+
+```{r}
+
+resultados2[ganancia > 0, .(ganancia=sum(ganancia), enviados=sum(n), sevan=sum(evento))]
+
+```
+
+Upa! Subió mucho la ganancia, pronto tendremos que controlar el *overfitting*, pero no ahora. veamos a que tipo de clases pertenece esa ganancia:
+
+```{r}
+
+resultados2[ganancia > 0, .(n=.N, gan=sum(ganancia)), by=y]
+
+```
+
+Ya no sosteniendo más esta forma de trabajar, vamos a calcular las probabilidades por hoja de que se vaya en 2 meses un cliente.
+
+```{r}
+
+resultados2[, c("p_evento","p_noevento"):= list(evento/n, noevento/n) ]
+resultados2
+
+```
+
+Graficamos para darnos una idea sobre la distribución de las probabilidades:
+
+```{r}
+
+library(ggplot2)
+
+ggplot(resultados2, aes(x=p_evento)) +
+     geom_density(aes(weights=y_n))
+
+ggplot(resultados2, aes(x=p_evento)) +
+    facet_grid(vars(y), scales = "free_y") +
+     geom_density(aes(weights=y_n))
+
+resultados2[, gano := ifelse(ganancia > 0, "gano", "pierdo")]
+
+
+ggplot(resultados2, aes(x=p_evento)) +
+    facet_grid(vars(gano), scales = "free_y") +
+     geom_density(aes(weights=y_n))
+
+# Una simple curiosidad... 
+weighted.mean(resultados2$p_evento, resultados2$y_n)
+
+```
+
+¿Qué interpreta de estas densidades?
+
+Definimos `punto de corte` a la probabilidad mínima que tiene que tener un elemento sobre esa clase para considerarla de la misma. Mirando el gráfico anterior, ¿qué punto de corte sugiere?
+
+Con esta definición y las probabilidades obtenidas, nos planteamos evaluar cuál debe ser nuestro punto de corte.
+
+```{r}
+
+resultados3 <- resultados2[order(-p_evento),]
+resultados3 <- resultados3[,.(evento=sum(evento), 
+                              noevento=sum(noevento),
+                              n=sum(n),
+                              ganancia=sum(ganancia)),by=p_evento]
+
+resultados3[, gan_acum:=cumsum(ganancia)]
+resultados3
+
+ggplot(resultados3, aes(x=p_evento,y=gan_acum)) +
+     geom_line(size=1)
+
+```
+
+![Zoom por favor](https://i.imgflip.com/17bdt9.jpg)
+
+```{r}
+max_ganancia <- max(resultados3$gan_acum)
+max_punto_corte <- resultados3[gan_acum == max(gan_acum), p_evento ] 
+
+l <- paste("La máxima ganancia es" , max_ganancia , "en el punto de corte" , max_punto_corte)
+
+ggplot(resultados3, aes(x=p_evento,y=gan_acum)) +
+    geom_line(size=1) + 
+    xlim(c(0.0045,0.1)) + 
+    ylim(c(-1000,8000000)) + 
+    geom_hline(yintercept = 0, linetype="dashed", color="red") +
+    geom_vline(xintercept = max_punto_corte) +
+    geom_point(x=max_punto_corte, y=max_ganancia, size=2, color="red") +
+    # annotate("text",x=0.01,y=100000, label = c(l))
+  annotate("text",x=0.18,y=1000000,label=l)
+
+```
+
+Con este análisis y con algo de respaldo teórico, vamos a tomar como `punto de corte` 0.025.
+
+Existen más formas de medir la calidad del modelo a través de las probabilidades que nos entrega. A nivel global podemos usar `AUC` (área bajo la curva ROC), que nos muestra el comportamiento global de la performance del modelo. 
+
+Vamos a trabajar de forma casera para el cálculo de los indicadores **básicos**. Más adelante usaremos librerías.
+
+```{r}
+
+resultados3[, c("evento_acum","noevento_acum"):=list(cumsum(evento),cumsum(noevento))]
+total_evento <- resultados3[,sum(evento)]
+total_noevento <- resultados3[,sum(noevento)]
+
+resultados3[, c("evento_restantes","noevento_restantes"):=list(total_evento - evento_acum,total_noevento - noevento_acum )]
+
+resultados3
+```
+
+Le ponemos el nombre a las variables según la matriz de confusión, siempre con la referencia del punto de corte.
+
+```{r}
+
+resultados3[,tp:=evento_acum]
+resultados3[,tn:=noevento_restantes]
+resultados3[,fp:=noevento_acum]
+resultados3[,fn:=evento_restantes]
+
+```
+
+Estudiemos primero la curva ROC. Para esta vamos a necesitar un par de variables más:
+
+```{r}
+
+resultados3[,tpr:=(tp/(tp+fn))]
+resultados3[,fpr:=(fp/(fp+tn))]
+
+```
+
+Y graficamos:
+
+```{r}
+
+ggplot(resultados3, aes(x=fpr,y=tpr)) + 
+  geom_abline(intercept=0,slope=1) +
+  geom_line(lwd=1) 
+
+```
+
+Y calculamos su área a pulmón ... nah usamos una librería.
+
+```{r}
+# install.packages("geometry")
+library(geometry)
+
+x <- c(resultados3$fpr,1)
+y <- c(resultados3$tpr, 0)
+polyarea(x, y)
+
+```
+
+Finalmente, luego de un largo trabajo, tenemos el famoso AUC. Larga vida a las librerías!
+
+Veamos ahora, algunas métricas más, solo por el mero juego intelectual:
+
+Accuracy (pero de acuerdo al punto de corte):
+
+```{r}
+
+resultados3[, acc:= ((tp + tn)/(tp+tn+fp+fn))]
+
+```
+
+Desde ahora, el accuracy no es una métrica, se gradua, y se transforma en curva.
+
+```{r}
+
+ggplot(resultados3, aes(x=p_evento,y=acc)) + 
+  geom_line(lwd=1) +
+  geom_vline(xintercept = 0.025, linetype="dotted")
+
+```
+
+Los escucho, ¿cuáles son sus conclusiones?
+
+Vamos por otra métrica: F1 Score
+
+```{r}
+resultados3[,precision := tp / (tp + fp)]
+resultados3[,recall := tp / (tp + fn)]
+resultados3[,f1 := 2*(precision*recall)/(precision+recall)]
+
+# Graficamos todo
+
+ggplot(resultados3, aes(x=p_evento,y=precision)) + 
+  geom_line(lwd=1) +
+  geom_vline(xintercept = 0.025, linetype="dotted")
+
+
+ggplot(resultados3, aes(x=p_evento,y=recall)) + 
+  geom_line(lwd=1) +
+  geom_vline(xintercept = 0.025, linetype="dotted")
+
+
+ggplot(resultados3, aes(x=p_evento,y=f1)) + 
+  geom_line(lwd=1) +
+  geom_vline(xintercept = 0.025, linetype="dotted")
+
+```
+
+El la métrica F1, es criticado por dar un mismo peso a `recall` y al `precision`. Por esto mismo, a alguien se le ocurrió el F-Beta:
+
+```{r}
+
+beta <- 0.5 # Da más peso al precision
+
+resultados3[, fb := (1 + beta^2)*(precision*recall)/((beta^2)*precision+recall)]
+
+ggplot(resultados3, aes(x=p_evento,y=fb)) + 
+  geom_line(lwd=1) +
+  geom_vline(xintercept = 0.025, linetype="dotted")
+
+```
+
+Y si cambiamos el Beta:
+
+```{r}
+
+beta <- 2 # Da más peso al recall
+
+resultados3[, fb := (1 + beta^2)*(precision*recall)/((beta^2)*precision+recall)]
+
+ggplot(resultados3, aes(x=p_evento,y=fb)) + 
+  geom_line(lwd=1) +
+  geom_vline(xintercept = 0.025, linetype="dotted")
+
+```
+
+Y vamos por un Beta más alto:
+
+```{r}
+
+beta <- 5
+
+resultados3[, fb := (1 + beta^2)*(precision*recall)/((beta^2)*precision+recall)]
+
+ggplot(resultados3, aes(x=p_evento,y=fb)) + 
+  geom_line(lwd=1) +
+  geom_vline(xintercept = 0.025, linetype="dotted")
+
+```
+
+
+¿Conclusiones? 
+
+¿Qué otras métricas conoce? 
+
+* Implemente en forma casera otras métricas (GINI, KS, Lift, etc...)
+* Corte el conjunto de datos en Train/Test y calcule todas las métricas para cada conjunto. 
+* ¿Ven diferencias entre cada muestra?
