@@ -6,7 +6,7 @@ version: 0.7
 output: 
   html_document:
     theme: spacelab
-    highlight: monochrome
+    highlight: monochrome 
     df_print: paged
 #    toc: true
 #    toc_depth: 2

@@ -34,7 +34,8 @@ gc()
 ```{r Levantar DS }
 
 library( "data.table")
-ds  <-  data.table::fread("../datasetsOri/paquete_premium.txt", header=TRUE, sep="\t")
+#ds  <-  data.table::fread("../datasetsOri/paquete_premium.txt", header=TRUE, sep="\t")
+ds= data.table::fread("../datasets/201904.txt", header=TRUE, sep="\t")
 
 ```
 
@@ -108,7 +109,7 @@ ds_ratios
 
 ggplot(ds_ratios, aes(x = x, y = value))+
   geom_line(aes(colour = variable), size = 1.2) +
-  scale_x_continuous(labels = unique(ds_ratios$foto_mes), breaks = seq(1,34,1), name="Foto Mes") +
+  scale_x_continuous(labels = unique(ds_ratios$foto_mes), breaks = seq(1), name="Foto Mes") +
   scale_y_continuous(name="% Churn") + 
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
