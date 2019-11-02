@@ -1,0 +1,677 @@
+---
+title: "Ajuste por inflación"
+author: "Santiago Rossi"
+date: "21/10/2019"
+output: 
+  html_notebook: 
+    fig_height: 12
+    fig_width: 10
+    theme: spacelab
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(GGally)
+library(tidyr)
+library(xgboost)
+library(pROC)
+library(ggthemes)
+library(gridExtra)
+```
+
+#¿Qué entendemos por inflación?
+
+La inflación es un **incremento sostenido del nivel general de precios** de los bienes y servicios de una economía
+
+
+## Formas de medir el nivel general de precios
+
+__1) Deflactor del PIB__: El deflactor del PIB ($DPIB$) es un índice que mide el precio medio de los bienes y servicios producidos en un año de referencia. 
+
+$$DPIB_t = \frac{\sum^N_{i=1}{p^i_t.q^i_t}}{\sum^N_{i=1}p^i_0.q^i_t}*100 =  \frac{\text{PIB a precios corriente}}{\text{PIB a precios de año base}}$$
+Con
+
+* $q^i_t$ la cantidad del bien i en el período t 
+* $p^i_t$ precio del bien i en el período t
+* $p^i_0$ el precio del bien i en el período de referencia (en Argentina es 2004 actualmente)
+
+__2) Inflación medida por el IPC__: El índice de precios al consumidor (IPC) mide el costo de una canasta de bienes y servicios que los hogares suelen comprar en un período de referencia
+$$IPC_t = \frac{\sum^N_{i=1}{p^i_t.q^i_0}}{\sum^N_{i=1}p^i_0.q^i_0}*100 = \frac{\text{Canasta a precios corrientes}}{\text{Canasta a precios de período de referencia}}$$
+
+__3) Otras menos conocidas __: El índice de precios al por mayor (IPM) o el índice de precios al productor (IPP)
+
+
+## Cálculo de la inflación
+
+$$\pi_t = 100*\frac{IPC_t - IPC_{t-1}}{IPC_{t-1}}$$
+
+```{r}
+ipc_historico<-read.csv("ipc_historico.csv",header = T,sep = ";",stringsAsFactors = F)
+
+ipc_historico$indice_tiempo<-as.Date(ipc_historico$indice_tiempo,format = "%d/%m/%Y")
+
+ipc_historico <- ipc_historico %>% mutate(inflacion_mensual = (ipc/lag(ipc) -1)*100,
+                                          inflacion_anual = (ipc/lag(ipc,12) -1)*100)
+
+summary(ipc_historico)
+```
+
+```{r, echo=FALSE, warning=FALSE}
+
+ggplot(ipc_historico, aes(x = indice_tiempo, y = inflacion_anual , group =1)) +
+  geom_line(size = 1.5, colour="#1380A1") +
+  labs(title = "IPC. Variación anual. 1943-2019 ",
+       subtitle = "Fuente: INDEC y GCBA (2012-2016) y FIEL (2007-2012)") +
+  labs(x = "Year", y = "USD million") +
+  geom_hline(yintercept = 0)+
+  theme_fivethirtyeight() + scale_colour_fivethirtyeight() +
+  theme(legend.position = "bottom", legend.direction = "horizontal",
+        legend.title = element_blank(),axis.text.x =element_text(angle = 90))
+
+```
+
+```{r, echo=FALSE, warning=FALSE}
+
+p<-ggplot(ipc_historico, aes(x = indice_tiempo, y = inflacion_anual , group =1)) +
+  geom_line(size = 1.5,colour="#1380A1") +
+  labs(title = "IPC. Variación anual. 1993 - 2019 ",
+       subtitle = "Fuente: INDEC y GCBA (2012-2016) y FIEL (2007-2012)") +
+  geom_hline(yintercept = 0)+
+  theme_fivethirtyeight() + scale_colour_fivethirtyeight() +
+  theme(legend.position = "bottom", legend.direction = "horizontal",
+        legend.title = element_blank(),axis.text.x =element_text(angle = 90),
+        plot.title = element_text(size = 14, face = "bold")) +
+  labs(x = "Año", y = "inflación anual (%)") +
+   scale_x_date(limits = as.Date(c('1993-01-01','2019-01-01'))) +
+  ylim(-5,60)
+
+p
+```
+
+
+
+##Teorias de las Causas de la Inflacion:
+
+*"Para bajar la inflación soy monetarista, estructuralista y todo lo que sea necesario; y si hay que recurrir a la macumba, también” (Adolfo Canitrot, viceministro de Economía de Alfonsín'*
+
+__1) Causas de corto plazo__:
+
+* Impulsada por demanda: Exceso de demanda lleva a aumentos en los precios
+
+* Inflación impulsada por costos: contracciones de oferta generan aumentos de precios (i.e. Shock petrolero, devaluaciones en Arg.)
+
+* Fallas de coordinación: inercia inflacionaria
+
+__2) Causas de largo plazo__: Si la tasa de crecimiento de la cantidad de dinero crece a un ritmo superior al crecimiento de la economía (cantidad de bienes y servicios), una mayor inflación es inevitable 
+
+* “Inflation is always and everywhere a monetary phenomenon.”
+  (M. Friedman)
+
+
+```{r, echo=FALSE, warning=FALSE}
+
+ipc_historico <- ipc_historico %>% mutate(deva_anual = (dolar/lag(dolar,12) -1)*100,
+                                          salario_anual = (salario/lag(salario,12) -1)*100)
+
+ggplot(ipc_historico, aes(x = indice_tiempo, y = inflacion_anual)) +
+  geom_line(size = 1.5,colour="#1380A1") +
+  labs(title = "IPC, Salarios y Dólar. Variación anual. 2010 - 2019 ",
+       subtitle = "Fuente: INDEC, FIEL, GCBA y Ministerio de Hacienda") +
+  geom_hline(yintercept = 0)+
+  theme_fivethirtyeight() +
+  theme(legend.position = "top",
+        axis.text.x =element_text(angle = 0),
+        plot.title = element_text(size = 14, face = "bold")) +
+  labs(x = "Año", y = "Variación anual (%)") +
+  scale_x_date(limits = as.Date(c('2010-01-01','2019-01-01'))) +
+  ylim(-5,80)+
+  geom_line(aes(y = salario_anual), colour="#FAAB18",size=1.5)+geom_line(aes(y = deva_anual), colour="#990000",size=1.5)+
+  geom_label(aes(x = as.Date(c('2011-01-01')), y = 45, label = "Salarios"), 
+                           hjust = 0, 
+                           vjust = 0.5, 
+                           fill = "transparent",
+                           label.size = NA,
+                           colour = "#FAAB18", 
+                           size = 6)+
+  geom_label(aes(x = as.Date(c('2014-12-01')), y = 70, label = "Dólar"), 
+                           hjust = 0, 
+                           vjust = 0.5, 
+                           fill = "transparent",
+                           label.size = NA,
+                           colour = "#990000", 
+                           size = 6)+
+  geom_label(aes(x = as.Date(c('2012-01-01')), y = 15, label = "IPC"), 
+                           hjust = 0, 
+                           vjust = 0.5, 
+                           fill = "transparent",
+                           label.size = NA,
+                           colour = "#1380A1", 
+                           size = 6)
+
+```
+
+
+##Interés para este trabajo
+
+La inflación distorsiona los precios relativos (salario real, saldos reales, tipo de cambio real) y dificulta la comparación intertemporal de las variables. Tambien afecta la toma de decisiones de los agentes (la información es costosa y la inflación agrega ruído).
+
+En ese marco, la inflación es un fenómeno que podría alterar el comportamiento de nuestras variables y no estamos considerando en el modelado del evento de interés. Esto podría estar afectar las conclusiones y resultados.
+
+Vamos a ver tres formas de neutralizar el efecto de la inflación: deflactar por el IPC, deflactar por el tipo de cambio y usando rangos.
+
+#Preparación de las bases
+
+Por un lado vamos a importar la base completa del paquete premium. Veamos que ventana de tiempo abarca la misma.
+
+```{r include=FALSE, warning=FALSE}
+#IMPORTO PAQUETE PREMIUM
+df<- fread('../datasets/paquete_premium_dias_1ano.txt', header=TRUE)
+
+head(df[foto_mes==201805,])
+```
+
+```{r}
+#
+#mes<-unique(df$foto_mes)
+#for (i in mes) {
+#  tmp <- df[foto_mes==i,]
+#  write_delim(x = tmp,path = paste0("../datasets/dias/", i, "_dias.txt"), delim = "\t")
+#}
+```
+
+
+```{r echo=FALSE, warning=FALSE}
+unique(df$foto_mes)
+```
+
+Reescalamos los índices para que sean base 201904=1
+
+
+```{r}
+ipc_historico$foto_mes<- format(ipc_historico$indice_tiempo, "%Y%m")
+ipc_historico$foto_mes<- as.numeric(ipc_historico$foto_mes)
+ipc_historico<-ipc_historico %>% filter(foto_mes %in% unique(df$foto_mes))
+
+
+ipc_historico <- ipc_historico %>% mutate(ipc = ipc/ipc[12],
+                                          salario = salario/salario[12],
+                                          dolar = dolar/dolar[12])
+
+```
+
+```{r}
+head(ipc_historico,15)
+
+```
+
+```{r, warning=FALSE}
+
+df<- df %>% left_join(ipc_historico, by=c('foto_mes'='foto_mes'))
+```
+
+  
+
+#Deflactar
+
+Presentamos dos técnicas para "neutralizar" el efecto de la inflación en nuestro modelo. La primera forma consiste en deflactar las variables monetarias tomando como referencia la evolución del IPC. El IPC se construye eligiendo un año como "año base" al cual se le asigna un IPC de 100. A los años siguientes se le irá sumando la inflación al año base. Por ejemplo, si la inflación interanual entre el año base y el siguiente fue de 2%, el IPC de ese año será de 102. De la misma forma se procede para los años anteriores al año base, pero restando la inflación.
+
+El calculo que vamos a realizar es: 
+
+$$\frac{VPC}{IPC}*100 $$
+
+Con:
+
+$VPC = Valor$ $en$ $precios$ $corrientes$ 
+$IPC = Indice$ $de$ $precios$ $al$ $Consumidor$.
+
+El procedimiento será el mismo a la hora de deflactar por el Tipo de Cambio.
+
+##Deflactar por IPC
+
+```{r, warning=FALSE}
+df['rent_12']=df$mrentabilidad/df$ipc
+df['saldo_12']=df$mcuentas_saldo/df$ipc
+df['sueldo_12']=df$mplan_sueldo/df$ipc
+df['debitos_12']=df$mcuenta_debitos_automaticos/df$ipc
+```
+
+
+##Deflactar por tipo de cambio
+```{r, warning=FALSE}
+df['rent_usd']=df$mrentabilidad/df$dolar
+df['saldo_usd']=df$mcuentas_saldo/df$dolar
+df['sueldo_usd']=df$mplan_sueldo/df$dolar
+df['debitos_usd']=df$mcuenta_debitos_automaticos/df$dolar
+
+```
+
+##Deflactar por rangos
+
+En segundo lugar, cuando deflactamos por rangos el procedimiento consiste en dividir el dataset en partes iguales (percentiles), de esta forma obtendremos un ordenamiento que es independiente de la magnitud de nuestras variables. Luego se evalúa pasaje de un rango al otro entre períodos. 
+
+```{r}
+df %>% 
+  ggplot(aes(x = mrentabilidad, colour = as.factor(foto_mes) )) + geom_density()+xlim(0,5000)
+
+```
+
+```{r}
+df %>% 
+  ggplot(aes(x = rent_12, colour = as.factor(foto_mes) )) + geom_density()+xlim(0,5000)
+
+```
+
+
+```{r, warning=FALSE}
+### Percentiles
+
+meses<- unique(df$foto_mes)
+beta=NULL
+for (i in meses){
+  a<- which(df$foto_mes==i)
+  alpha<- df[a,c("numero_de_cliente", "foto_mes","mrentabilidad","mcuentas_saldo", "mplan_sueldo", "mcuenta_debitos_automaticos")]
+  alpha$mrentabilidad<-ecdf(alpha$mrentabilidad)(alpha$mrentabilidad)
+  alpha$mcuentas_saldo<-ecdf(alpha$mcuentas_saldo)(alpha$mcuentas_saldo)
+  alpha$mplan_sueldo<-ecdf(alpha$mplan_sueldo)(alpha$mplan_sueldo)
+  alpha$mcuenta_debitos_automaticos<-ecdf(alpha$mcuenta_debitos_automaticos)(alpha$mcuenta_debitos_automaticos)
+  beta=rbind(beta, alpha)
+  }
+
+colnames(beta)<- c("numero_de_cliente", "foto_mes","rentabilidad_perc","saldo_perc", "sueldo_perc", "debitos_perc")
+
+df<- df %>% left_join(beta)
+```
+
+
+```{r, warning=FALSE}
+### Escalado (normalizado)
+
+meses<- unique(df$foto_mes)
+beta=NULL
+for (i in meses){
+  a<- which(df$foto_mes==i)
+  alpha<- df[a,c("numero_de_cliente", "foto_mes","mrentabilidad","mcuentas_saldo", "mplan_sueldo", "mcuenta_debitos_automaticos")]
+  alpha$mrentabilidad<-scale(alpha$mrentabilidad)
+  alpha$mcuentas_saldo<-scale(alpha$mcuentas_saldo)
+  alpha$mplan_sueldo<-scale(alpha$mplan_sueldo)
+  alpha$mcuenta_debitos_automaticos<-scale(alpha$mcuenta_debitos_automaticos)
+  beta=rbind(beta, alpha)
+  }
+
+colnames(beta)<- c("numero_de_cliente", "foto_mes","rentabilidad_norm","saldo_norm", "sueldo_norm", "debitos_norm")
+
+df<- df %>% left_join(beta)
+```
+
+
+#Impacto en las Variables
+
+En los gráficos a continuación se ve la evolución intermensual de las variables numéricas deflactadas y no deflactadas tomando un cliente particular. Como se puede apreciar, las trayectorias se mantienen prácticamente iguales, únicamente varían las unidades se magnitud. 
+
+Esto indica que  muy probablemente no cabría esperar variaciones significativa en los resultados de los modelos.
+```{r}
+head(df[45:74,],10)
+```
+```{r}
+set.seed(151515)
+lista_clientes<-sample(x =unique(df$numero_de_cliente), size = 1 ) 
+cliente<-df %>%  filter(numero_de_cliente %in% lista_clientes)
+```
+
+
+```{r, echo=FALSE}
+
+cliente$foto_mes<-as.Date(paste0(as.character(cliente$foto_mes), '01'), format='%Y%m%d')
+clientejunto <- melt(cliente[, c("foto_mes", "mplan_sueldo", "sueldo_12",'sueldo_usd', "sueldo_perc","sueldo_norm")], id="foto_mes")
+ggplot(clientejunto) + geom_line(aes(x=foto_mes, y=value, color=variable))  + facet_wrap( ~ variable, scales="free") +
+  theme_minimal()+
+  theme(legend.text = element_text(size=7),axis.text.x = element_text(angle = 90, hjust = 1),plot.title = element_text(hjust = 0.5))+
+    labs(x="Mes", y="",
+       title="Evolucion  Sueldo")
+
+clientejunto <- melt(cliente[, c("foto_mes", "mrentabilidad", "rent_12",'rent_usd',"rentabilidad_perc","rentabilidad_norm")], id="foto_mes")
+ggplot(clientejunto) + geom_line(aes(x=foto_mes, y=value, color=variable))  + facet_wrap( ~ variable, scales="free")+ 
+  theme_minimal()+
+  theme(legend.text = element_text(size=7),axis.text.x = element_text(angle = 90, hjust = 1),plot.title = element_text(hjust = 0.5))+
+  labs(x="Mes", y="",
+       title="Evolucion  Rentabilidad")
+
+clientejunto <- melt(cliente[, c("foto_mes", "mcuentas_saldo", "saldo_12",'saldo_usd',"saldo_perc","saldo_norm")], id="foto_mes")
+ggplot(clientejunto) + geom_line(aes(x=foto_mes, y=value, color=variable))  + facet_wrap( ~ variable, scales="free")+
+    theme_minimal()+
+  theme(legend.text = element_text(size=7),axis.text.x = element_text(angle = 90, hjust = 1),plot.title = element_text(hjust = 0.5))+
+  labs(x="Mes", y="",
+       title="Evolucion  Saldo en Cuenta")
+
+clientejunto <- melt(cliente[, c("foto_mes", "mcuenta_debitos_automaticos", "debitos_12",'debitos_usd',"debitos_perc","debitos_norm")], id="foto_mes")
+ggplot(clientejunto) + geom_line(aes(x=foto_mes, y=value, color=variable))  + facet_wrap( ~ variable, scales="free")+
+    theme_minimal()+
+    theme(legend.text = element_text(size=7),axis.text.x = element_text(angle = 90, hjust = 1),plot.title = element_text(hjust = 0.5))+
+  labs(x="Mes", y="",
+       title="Evolucion  Debitos Automaticos")
+```
+
+
+#Impacto en el modelo
+
+A continuación, par aevaluar los efectos de la neutralización de la inflación en las variables nominales se entrenaron cuatro modelos, uno con las variables numéricas sin modificar, con las variables deflactadas por el IPC, deflactadas por el tipo de cambio y por rangos, usando los datos del mes de febrero y se lo fue probando en los meses siguientes. Se recopilaron las métricas de AUC y de ganancia y se comparó la evolución de dichas métricas para cada modelo.
+
+```{r, echo=FALSE}
+ganancia   <- function(probs, clases) 
+{
+
+   vlabels <- getinfo(clases, "label")
+
+   ganancia_calculada  <- sum(    (probs >( 0.025) ) * 
+		                   ifelse( vlabels== 1, 11700, -300 )   
+              		     ) 
+   return(  list(metric = "ganancia", value = ganancia_calculada )  )
+}
+
+
+#Vamos a ajustar con febrero y ver como performan los modelos segun el tipo de variable que usemos
+
+febrero  <-  fread("../datasets/dias/201902_dias.txt", header=TRUE, sep="\t")
+
+clases_febrero <- ifelse(febrero$clase_ternaria == "BAJA+2", 1, 0)
+
+cols<-c("numero_de_cliente", "foto_mes","mrentabilidad","mcuentas_saldo", "mplan_sueldo", "mcuenta_debitos_automaticos", "clase_ternaria")
+
+febrero<- febrero %>% select(cols)
+febrero<- febrero %>% left_join(ipc_historico, by=c('foto_mes'='foto_mes'))
+ 
+kbase_score  <-  sum( clases_febrero ) / length(clases_febrero)
+#Deflacto por IPC
+febrero['rent_12']=febrero$mrentabilidad/febrero$ipc
+febrero['saldo_12']=febrero$mcuentas_saldo/febrero$ipc
+febrero['sueldo_12']=febrero$mplan_sueldo/febrero$ipc
+febrero['debitos_12']=febrero$mcuenta_debitos_automaticos/febrero$ipc
+
+#Deflactamos por TC
+febrero['rent_usd']=febrero$mrentabilidad/febrero$dolar
+febrero['saldo_usd']=febrero$mcuentas_saldo/febrero$dolar
+febrero['sueldo_usd']=febrero$mplan_sueldo/febrero$dolar
+febrero['debitos_usd']=febrero$mcuenta_debitos_automaticos/febrero$dolar
+
+#Generamos Rangos
+febrero["rentabilidad_perc"]<-ecdf(febrero$mrentabilidad)(febrero$mrentabilidad)
+febrero["saldo_perc"]<-ecdf(febrero$mcuentas_saldo)(febrero$mcuentas_saldo)
+febrero["sueldo_perc"]<-ecdf(febrero$mplan_sueldo)(febrero$mplan_sueldo)
+febrero["debitos_perc"]<-ecdf(febrero$mcuenta_debitos_automaticos)(febrero$mcuenta_debitos_automaticos)
+
+#normalizacion
+febrero["rentabilidad_norm"]<-scale(febrero$mrentabilidad)
+febrero["saldo_norm"]<-scale(febrero$mcuentas_saldo)
+febrero["sueldo_norm"]<-scale(febrero$mplan_sueldo)
+febrero["debitos_norm"]<-scale(febrero$mcuenta_debitos_automaticos)
+
+
+nominal<- c("numero_de_cliente", "foto_mes","mrentabilidad","mcuentas_saldo", "mplan_sueldo", "mcuenta_debitos_automaticos")
+inflacion<- c("numero_de_cliente", "foto_mes","rent_12","saldo_12", "sueldo_12", "debitos_12")
+tipo_de_cambio<- c("numero_de_cliente", "foto_mes","rent_usd","saldo_usd", "sueldo_usd", "debitos_usd")
+rango<- c("numero_de_cliente", "foto_mes","rentabilidad_perc","saldo_perc", "sueldo_perc", "debitos_perc")
+normal<- c("numero_de_cliente", "foto_mes","rentabilidad_norm","saldo_norm", "sueldo_norm", "debitos_norm")
+
+
+#Modelo Nominal
+dtrain_nom <- xgb.DMatrix( data = data.matrix(febrero[nominal]),  label = clases_febrero, missing=NA )
+
+modelo_nom = xgb.train( 
+				data = dtrain_nom,  
+				missing = NA,
+				nround= 20,
+    	  eval_metric= "auc", 
+				maximize =TRUE,
+				objective="binary:logistic",
+			  verbose = 2
+			)
+
+#Modelo Deflactodo
+dtrain_ipc <- xgb.DMatrix( data = data.matrix(febrero[inflacion]),  label = clases_febrero, missing=NA )
+
+modelo_ipc = xgb.train( 
+				data = dtrain_ipc,  
+				missing = NA,
+				nround= 20,
+    	  eval_metric= "auc", 
+				maximize =TRUE,
+				objective="binary:logistic",
+			  verbose = 2
+			)
+
+#Modelo Deflactodo
+dtrain_usd <- xgb.DMatrix( data = data.matrix(febrero[tipo_de_cambio]),  label = clases_febrero, missing=NA )
+
+modelo_usd = xgb.train( 
+				data = dtrain_usd,  
+				missing = NA,
+				nround= 20,
+    	  eval_metric= "auc", 
+				maximize =TRUE,
+				objective="binary:logistic",
+			  verbose = 2
+			)
+
+#Modelo rango
+dtrain_rang <- xgb.DMatrix( data = data.matrix(febrero[rango]),  label = clases_febrero, missing=NA )
+
+modelo_rang = xgb.train( 
+				data = dtrain_rang,  
+				missing = NA,
+				nround= 20,
+    	  eval_metric= "auc", 
+				maximize =TRUE,
+				objective="binary:logistic",
+			  verbose = 2
+			)
+
+
+#Modelo normalizado
+dtrain_norm <- xgb.DMatrix( data = data.matrix(febrero[normal]),  label = clases_febrero, missing=NA )
+
+modelo_norm = xgb.train( 
+				data = dtrain_norm,  
+				missing = NA,
+				nround= 20,
+    	  eval_metric= "auc", 
+				maximize =TRUE,
+				objective="binary:logistic",
+			  verbose = 2
+			)
+
+# meses a validar
+meses <- c(unique(df$foto_mes))
+
+resultados <- data.frame()
+
+for (m in meses) {
+    mes <- fread(paste0("../datasets/dias/", m, "_dias.txt"), header=TRUE, sep="\t")
+    clases_mes <- ifelse(mes$clase_ternaria == "BAJA+2", 1, 0)
+
+    mes<- mes %>% select(cols)
+    mes<- mes %>% left_join(ipc_historico, by=c('foto_mes'='foto_mes'))
+ 
+
+    #Deflacto por IPC
+    mes['rent_12']=mes$mrentabilidad/mes$ipc
+    mes['saldo_12']=mes$mcuentas_saldo/mes$ipc
+    mes['sueldo_12']=mes$mplan_sueldo/mes$ipc
+    mes['debitos_12']=mes$mcuenta_debitos_automaticos/mes$ipc
+
+    #Deflactamos por TC
+    mes['rent_usd']=mes$mrentabilidad/mes$dolar
+    mes['saldo_usd']=mes$mcuentas_saldo/mes$dolar
+    mes['sueldo_usd']=mes$mplan_sueldo/mes$dolar
+    mes['debitos_usd']=mes$mcuenta_debitos_automaticos/mes$dolar
+    
+    #Generamos Rangos
+    mes["rentabilidad_perc"]<-ecdf(mes$mrentabilidad)(mes$mrentabilidad)
+    mes["saldo_perc"]<-ecdf(mes$mcuentas_saldo)(mes$mcuentas_saldo)
+    mes["sueldo_perc"]<-ecdf(mes$mplan_sueldo)(mes$mplan_sueldo)
+    mes["debitos_perc"]<-ecdf(mes$mcuenta_debitos_automaticos)(mes$mcuenta_debitos_automaticos)
+    
+    #Generamos Normal
+    mes["rentabilidad_norm"]<-scale(mes$mrentabilidad)
+    mes["saldo_norm"]<-scale(mes$mcuentas_saldo)
+    mes["sueldo_norm"]<-scale(mes$mplan_sueldo)
+    mes["debitos_norm"]<-scale(mes$mcuenta_debitos_automaticos)
+
+    mes_nominal<- mes %>% select(nominal)
+    mes_ipc<- mes %>% select(inflacion)
+    mes_dolar<- mes %>% select(tipo_de_cambio)
+    mes_rang<- mes %>% select(rango)
+    mes_norm<- mes %>% select(normal)
+    
+    #Prediccion modelo nominal
+    y_pred_nom <- predict(modelo_nom, data.matrix(mes_nominal),  type = "prob")
+    prediccion_nom<- ifelse((y_pred_nom >( 0.025)),1,0)
+    roc_calc_nom<- roc(clases_mes,prediccion_nom)
+    auc_nom<-auc(roc_calc_nom)
+    gan_nom<-sum((y_pred_nom >( 0.025) ) * ifelse( clases_mes== 1, 11700, -300 )) 
+    
+    #Prediccion modelo IPC
+    y_pred_ipc <- predict(modelo_ipc, data.matrix(mes_ipc),  type = "prob")
+    prediccion_ipc<- ifelse((y_pred_ipc >( 0.025)),1,0)
+    roc_calc_ipc<- roc(clases_mes,prediccion_ipc)
+    auc_ipc<-auc(roc_calc_ipc)
+    gan_ipc<-sum((y_pred_ipc >( 0.025) ) * ifelse( clases_mes== 1, 11700, -300 )) 
+    
+    #Prediccion modelo USD
+    y_pred_dolar <- predict(modelo_usd, data.matrix(mes_dolar),  type = "prob")
+    prediccion_dolar<- ifelse((y_pred_dolar >( 0.025)),1,0)
+    roc_calc_dolar<- roc(clases_mes,prediccion_dolar)
+    auc_dolar<-auc(roc_calc_dolar)
+    gan_dolar<-sum((y_pred_dolar >( 0.025) ) * ifelse( clases_mes== 1, 11700, -300 ))
+    
+    
+    #Prediccion modelo rango
+    y_pred_rango <- predict(modelo_rang, data.matrix(mes_rang),  type = "prob")
+    prediccion_rango<- ifelse((y_pred_rango >( 0.025)),1,0)
+    roc_calc_rango<- roc(clases_mes,prediccion_rango)
+    auc_rango<-auc(roc_calc_rango)
+    gan_rango<-sum((y_pred_rango >( 0.025) ) * ifelse( clases_mes== 1, 11700, -300 ))
+    
+    #Prediccion modelo normal
+    y_pred_normal <- predict(modelo_norm, data.matrix(mes_norm),  type = "prob")
+    prediccion_normal<- ifelse((y_pred_normal >( 0.025)),1,0)
+    roc_calc_normal<- roc(clases_mes,prediccion_normal)
+    auc_normal<-auc(roc_calc_normal)
+    gan_normal<-sum((y_pred_normal >( 0.025) ) * ifelse( clases_mes== 1, 11700, -300 ))
+    
+    
+        resumen=c(m, auc_nom, gan_nom, auc_ipc, gan_ipc, auc_dolar, gan_dolar, auc_rango,gan_rango,auc_normal,gan_normal)
+        
+    resumen= t(resumen)
+    
+    resultados <- rbind(resultados,resumen)
+}
+
+colnames(resultados)<-c("mes","auc_nominal", "ganancia_nominal","auc_ipc", "ganancia_ipc",
+                        "auc_dolar","ganancia_dolar","auc_rangos","ganancia_rangos","auc_normal","ganancia_normal")
+
+###Grafico
+ipcv<-ipc_historico
+
+ipcv$Mes<-as.Date(paste0(as.character(ipcv$foto_mes), '01'), format='%Y%m%d')
+
+a<-ggplot(ipcv, aes(x = Mes, y = ipc)) + 
+  geom_line(aes(color = ipc), size = 1.5) + theme_fivethirtyeight()+
+  theme(legend.position = "none",axis.text.x = element_text(angle = 90, hjust = 1)) 
+
+b<-ggplot(ipcv, aes(x = Mes, y = dolar)) + 
+  geom_line(aes(color = dolar), size = 1.5) + theme_fivethirtyeight() +
+  theme(legend.position = "none",axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+auc_meses <- resultados %>%
+  select("mes", "auc_nominal", "auc_ipc",'auc_dolar', "auc_rangos","auc_normal") %>%
+  gather(key = "variable", value = "value", -mes)
+
+auc_meses$mes<-as.Date(paste0(as.character(auc_meses$mes), '01'), format='%Y%m%d')
+
+
+
+ganancia_meses <- resultados %>%
+  select("mes", "ganancia_nominal", "ganancia_ipc",'ganancia_dolar', "ganancia_rangos", "ganancia_normal") %>%
+  gather(key = "variable", value = "value", -mes)
+
+ganancia_meses$mes<-as.Date(paste0(as.character(ganancia_meses$mes), '01'), format='%Y%m%d')
+
+
+```
+
+```{r}
+
+auc_plot<-ggplot(auc_meses, aes(x = mes, y = value)) + 
+          geom_line(aes(color = variable), size = 1) + theme_fivethirtyeight()+
+  theme(legend.text = element_text(size=7),axis.text.x = element_text(angle = 90, hjust = 1)) +
+   guides(col = guide_legend(nrow = 3))
+
+grid.arrange(auc_plot, arrangeGrob(a, b), ncol = 2)
+
+
+ganancia_plot<-ggplot(ganancia_meses, aes(x = mes, y = value,color = variable)) + 
+              geom_line( size = 1) + theme_fivethirtyeight()+
+              theme(legend.text = element_text(size=7),axis.text.x = element_text(angle = 90, hjust = 1))+
+              guides(col = guide_legend(nrow = 3))
+
+
+grid.arrange(ganancia_plot, arrangeGrob(a, b), ncol = 2)
+```
+
+
+```{r}
+
+
+auc_meses <- resultados %>%
+  select("mes", "auc_nominal", "auc_ipc",'auc_dolar') %>%
+  gather(key = "variable", value = "value", -mes)
+
+auc_meses$mes<-as.Date(paste0(as.character(auc_meses$mes), '01'), format='%Y%m%d')
+
+
+
+ganancia_meses <- resultados %>%
+  select("mes", "ganancia_nominal", "ganancia_ipc",'ganancia_dolar') %>%
+  gather(key = "variable", value = "value", -mes)
+
+ganancia_meses$mes<-as.Date(paste0(as.character(ganancia_meses$mes), '01'), format='%Y%m%d')
+
+
+```
+
+
+```{r}
+
+auc_plot<-ggplot(auc_meses, aes(x = mes, y = value)) + 
+          geom_line(aes(color = variable), size = 1) + theme_fivethirtyeight()+
+  theme(legend.text = element_text(size=7),axis.text.x = element_text(angle = 90, hjust = 1)) +
+   guides(col = guide_legend(nrow = 3))
+
+grid.arrange(auc_plot, arrangeGrob(a, b), ncol = 2)
+
+
+ganancia_plot<-ggplot(ganancia_meses, aes(x = mes, y = value,color = variable)) + 
+              geom_line( size = 1) + theme_fivethirtyeight()+
+              theme(legend.text = element_text(size=7),axis.text.x = element_text(angle = 90, hjust = 1))+
+              guides(col = guide_legend(nrow = 3))
+
+
+grid.arrange(ganancia_plot, arrangeGrob(a, b), ncol = 2)
+```
+
+# Conclusiones
+
+* Los ajuste por rangos (percentiles) y normalizado son claramente peores al benchmark (varaibles nominales).
+
+* Los ajustes por IPC y dólar logran superar al benchmark en algunos casos pero no está claro que sean superiores.
+
+* Estas observaciones se verifican tanto para el AUC como para la ganancia.
+
+* Una veta a explorar es incorporar variables rezagadas en el mes en curso (i.e. mcuentasaldo, mcuentasaldo_t_1, mcuentasaldo_t_2)
+
