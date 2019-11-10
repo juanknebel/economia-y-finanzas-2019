@@ -1,0 +1,541 @@
+---
+title: "Feature Engineering I"
+author: "Alejandro Bolaños"
+date: "2019-09-23"
+version: 0.7
+output: 
+  html_document:
+    theme: spacelab
+    highlight: monochrome
+    df_print: paged
+#    toc: true
+#    toc_depth: 2
+
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+> Facts are stubborn things, but statistics are pliable. --- Mark Twain
+
+Nos iniciamos en uno de los campos donde un ánalista puede dar más valor a la hora de modelar. Uno no suele programar los Random Forest. Pero la preparación de las variables está lejos de ser resuelta por un grupo de algoritmos. En esta clase veremos una pequeña parte de la construcción de variables. 
+
+```{r}
+
+rm( list=ls() )
+gc()
+
+```
+
+Para empezar a trabajar con comodidad vamos a definir una función para armar modelos `Xgb` para un grupo de variables.
+
+```{r}
+library( "data.table" )
+library(xgboost)
+library(ggplot2)
+
+
+fmodelo.cv <- function(data, clase, verbose =FALSE) {
+  # Modelo var_down_gan_best_can
+  dtrain   <- xgb.DMatrix( data = data.matrix(data),  label = clase, missing=NA )
+  modelo <- xgb.cv( 
+    data = dtrain,  
+    missing = NA,
+    stratified = TRUE,       
+    nround= 50,
+    nfold = 5,
+    watchlist = list(metric='auc'),
+    eval_metric= "auc",
+    maximize =TRUE,
+    eta = 0.3,
+    max_depth = 6,
+    objective="binary:logistic",
+    tree_method = "hist",
+    grow_policy="lossguide",
+    verbose = verbose
+  )
+  return(max(modelo$evaluation_log$test_auc_mean))
+}
+
+fmodelo.train <- function(data, clase) {
+  dtrain   <- xgb.DMatrix( data = data.matrix(data),  label = clase, missing=NA )
+  xgb.train( 
+    data = dtrain,  
+    missing = NA,
+    nround= 50,
+    maximize =TRUE,
+    objective="binary:logistic",
+    tree_method = "hist",
+    grow_policy="lossguide",
+    verbose = FALSE
+  )
+}
+  
+```
+
+Vamos a medir unicamente el `AUC`.
+
+Primero vamos a ver las variables mas importantes de un modelo para febrero:
+
+```{r}
+febrero  <-  readRDS("../datasets/dias/201902.RDS")
+clases_febrero <- ifelse(febrero$clase_ternaria == "BAJA+2", 1, 0)
+febrero$clase_ternaria <- NULL
+
+set.seed(17)
+m1 <- fmodelo.train(febrero, clases_febrero)
+var_imp <- xgb.importance(colnames(febrero),model = m1)
+xgb.ggplot.importance(var_imp, measure = "Frequency", rel_to_first = TRUE)
+
+```
+
+Feo feo, pero es sólo para ver la distribución de las importancias.
+
+Recordemos cuales variables se les aplicó la transformación de fecha:
+
+```{r}
+
+var_fechas_relativas <- c("Master_Fvencimiento","Master_Finiciomora","Master_fultimo_cierre","Master_fechaalta","Visa_Fvencimiento","Visa_Finiciomora","Visa_fultimo_cierre","Visa_fechaalta")
+
+```
+
+Y busquemos las mismas en la importancia de variables de nuestro `XGB`:
+
+```{r}
+var_imp[, pos := .I]
+var_imp[ Feature %in% var_fechas_relativas,]
+```
+
+
+* ¿Por qué aparece este variable `Visa_Finiciomora` entre las más importante? 
+
+Grafiquemos como aprendimos en la clase del EDA:
+
+```{r}
+
+
+febrero_Visa_Finiciomora <- data.table(Visa_mora = febrero[,Visa_Finiciomora], clases_febrero)
+fvm <- dcast(febrero_Visa_Finiciomora, Visa_mora  ~ clases_febrero, 
+                        length, 
+                        value.var = "clases_febrero" )
+fvm[, ratio := `1`/(`0` + `1`)]
+fvm[, Visa_mora := factor(Visa_mora)]
+
+fvm
+
+ggplot(fvm, aes(x=Visa_mora, y=ratio)) +
+  geom_bar(stat="identity", fill="blue")
+```
+
+* Nota algún fenómeno? 
+* Es consistente el comportamiento que vemos en `Febrero` en los meses anteriores?
+
+Vemos la importancias de la variable `Visa_marca_atraso`. Estudiemos que tan buena es viendo que tan bien da un modelo solo con esta variable:
+
+```{r}
+paste0("Visa: ", fmodelo.cv(febrero[,Master_marca_atraso], clases_febrero))
+paste0("Master: ", fmodelo.cv(febrero[,Visa_marca_atraso], clases_febrero))
+```
+
+
+
+Probemos combinar ambas:
+
+```{r}
+max_marca_atraso = pmax( febrero[,Master_marca_atraso], febrero[,Visa_marca_atraso]) 
+
+paste0("Master+Visa: ",fmodelo.cv(max_marca_atraso,clases_febrero))
+```
+
+Observamos que al juntar una variable se puede lograr sumar información de forma unidimensional. 
+
+* Que tipo de interacciones conoce?
+* Todas las interacciones van a dar valor a los modelos? Depende del tipo de algoritmo?
+
+Veamos el peso de una variable en el global. Para esto mismo, eliminemos la variable más importante y veamos que tanto cae la performance del mismo
+
+```{r}
+feb_sin_vos <- febrero
+feb_sin_vos$mcaja_ahorro_Paquete <- NULL
+
+set.seed(17)
+print(paste0("Febrero completo:", fmodelo.cv(febrero, clases_febrero)))
+print(paste0("Febrero sin la mejor:", fmodelo.cv(feb_sin_vos, clases_febrero)))
+```
+
+* Esperaba esos números? 
+* Y si quitamos las 3 mejores?
+
+Recordar que no hay selección de features en la configuración por defecto.
+
+Veamos las variables sugeridas en el script `R/FeatureEngineering/fe_presente.R`, analicemos que significan y veamos como se calculan:
+
+
+```{r}
+febrero2 <- febrero
+
+febrero2[ , mv_cuenta_estado2       := pmax( Master_cuenta_estado,  Visa_cuenta_estado, na.rm = TRUE) ]
+febrero2[ , mv_marca_atraso         := pmax( Master_marca_atraso, Visa_marca_atraso, na.rm = TRUE) ]
+febrero2[ , mv_mfinanciacion_limite := rowSums( cbind( Master_mfinanciacion_limite,  Visa_mfinanciacion_limite) , na.rm=TRUE ) ]
+febrero2[ , mv_Fvencimiento         := pmin( Master_Fvencimiento, Visa_Fvencimiento, na.rm = TRUE) ]
+febrero2[ , mv_Finiciomora          := pmin( Master_Finiciomora, Visa_Finiciomora, na.rm = TRUE) ]
+febrero2[ , mv_msaldototal          := rowSums( cbind( Master_msaldototal,  Visa_msaldototal) , na.rm=TRUE ) ]
+febrero2[ , mv_msaldopesos          := rowSums( cbind( Master_msaldopesos,  Visa_msaldopesos) , na.rm=TRUE ) ]
+febrero2[ , mv_msaldodolares        := rowSums( cbind( Master_msaldodolares,  Visa_msaldodolares) , na.rm=TRUE ) ]
+febrero2[ , mv_mconsumospesos       := rowSums( cbind( Master_mconsumospesos,  Visa_mconsumospesos) , na.rm=TRUE ) ]
+febrero2[ , mv_mconsumosdolares     := rowSums( cbind( Master_mconsumosdolares,  Visa_mconsumosdolares) , na.rm=TRUE ) ]
+febrero2[ , mv_mlimitecompra        := rowSums( cbind( Master_mlimitecompra,  Visa_mlimitecompra) , na.rm=TRUE ) ]
+febrero2[ , mv_madelantopesos       := rowSums( cbind( Master_madelantopesos,  Visa_madelantopesos) , na.rm=TRUE ) ]
+febrero2[ , mv_madelantodolares     := rowSums( cbind( Master_madelantodolares,  Visa_madelantodolares) , na.rm=TRUE ) ]
+febrero2[ , mv_fultimo_cierre       := pmax( Master_fultimo_cierre, Visa_fultimo_cierre, na.rm = TRUE) ]
+febrero2[ , mv_mpagado              := rowSums( cbind( Master_mpagado,  Visa_mpagado) , na.rm=TRUE ) ]
+febrero2[ , mv_mpagospesos          := rowSums( cbind( Master_mpagospesos,  Visa_mpagospesos) , na.rm=TRUE ) ]
+febrero2[ , mv_mpagosdolares        := rowSums( cbind( Master_mpagosdolares,  Visa_mpagosdolares) , na.rm=TRUE ) ]
+febrero2[ , mv_fechaalta            := pmax( Master_fechaalta, Visa_fechaalta, na.rm = TRUE) ]
+febrero2[ , mv_mconsumototal        := rowSums( cbind( Master_mconsumototal,  Visa_mconsumototal) , na.rm=TRUE ) ]
+febrero2[ , mv_tconsumos            := rowSums( cbind( Master_tconsumos,  Visa_tconsumos) , na.rm=TRUE ) ]
+febrero2[ , mv_tadelantosefectivo   := rowSums( cbind( Master_tadelantosefectivo,  Visa_tadelantosefectivo) , na.rm=TRUE ) ]
+febrero2[ , mv_mpagominimo          := rowSums( cbind( Master_mpagominimo,  Visa_mpagominimo) , na.rm=TRUE ) ]
+febrero2[ , mvr_Master_mlimitecompra:= Master_mlimitecompra / mv_mlimitecompra ]
+febrero2[ , mvr_Visa_mlimitecompra  := Visa_mlimitecompra / mv_mlimitecompra ]
+febrero2[ , mvr_msaldototal         := mv_msaldototal / mv_mlimitecompra ]
+febrero2[ , mvr_msaldopesos         := mv_msaldopesos / mv_mlimitecompra ]
+febrero2[ , mvr_msaldopesos2        := mv_msaldopesos / mv_msaldototal ]
+febrero2[ , mvr_msaldodolares       := mv_msaldodolares / mv_mlimitecompra ]
+febrero2[ , mvr_msaldodolares2      := mv_msaldodolares / mv_msaldototal ]
+febrero2[ , mvr_mconsumospesos      := mv_mconsumospesos / mv_mlimitecompra ]
+febrero2[ , mvr_mconsumosdolares    := mv_mconsumosdolares / mv_mlimitecompra ]
+febrero2[ , mvr_madelantopesos      := mv_madelantopesos / mv_mlimitecompra ]
+febrero2[ , mvr_madelantodolares    := mv_madelantodolares / mv_mlimitecompra ]
+febrero2[ , mvr_mpagado             := mv_mpagado / mv_mlimitecompra ]
+febrero2[ , mvr_mpagospesos         := mv_mpagospesos / mv_mlimitecompra ]
+febrero2[ , mvr_mpagosdolares       := mv_mpagosdolares / mv_mlimitecompra ]
+febrero2[ , mvr_mconsumototal       := mv_mconsumototal  / mv_mlimitecompra ]
+febrero2[ , mvr_mpagominimo         := mv_mpagominimo  / mv_mlimitecompra ]
+
+#fmodelo.cv(febrero2, clases_febrero, verbose = TRUE)
+fmodelo.cv(febrero2, clases_febrero)
+```
+
+Se ven resultados más que positivos! Sería un pecado no seguir creando más variables de valor. Cree más variables de valor.
+
+## Comportamiento histórico
+
+Sumaremos información a los individuos en función del comportamiento histórico, para esto trabajaremos con un grupo de variables.
+
+```{r }
+varios_meses <- data.table()
+
+periodos <- c("201902","201901","201812","201811","201810","201809")
+var_analizar <- c("foto_mes","numero_de_cliente","clase_ternaria", "mcuentas_saldo","mcuenta_corriente_Paquete","mpasivos_margen", "mcaja_ahorro_Paquete","cliente_edad")
+
+for (p in periodos) {
+   d <- readRDS(paste0("../datasets/dias/", p, ".RDS",collapse = ""))[,var_analizar,with=FALSE]
+  varios_meses <- rbindlist(list(varios_meses,d))
+}
+
+# ordenamos debidamente
+setorderv(varios_meses, c("numero_de_cliente", "foto_mes"), c(1,1))
+
+```
+
+Veamos como varia el valor de la variable para una persona.
+
+```{r}
+# Tomamos una persona al azar que sea clase continua y que sea clase BAJA+x
+clase <- "CONTINUA"
+cliente <- sample(
+  varios_meses[foto_mes == 201902 &
+                 clase_ternaria == clase, numero_de_cliente], 
+  1)
+
+ggplot(varios_meses[numero_de_cliente == cliente,],
+       aes(x = foto_mes, y = mcuentas_saldo)) + geom_point( size=1)
+
+```
+
+Vemos que las fechas nos juegan una mala pasada, calculamos una nueva variable para visualizar de forma correcta.
+
+```{r}
+
+varios_meses[ foto_mes == 201902, pos_mes := 6]
+varios_meses[ foto_mes == 201901, pos_mes := 5]
+varios_meses[ foto_mes == 201812, pos_mes := 4]
+varios_meses[ foto_mes == 201811, pos_mes := 3]
+varios_meses[ foto_mes == 201810, pos_mes := 2]
+varios_meses[ foto_mes == 201809, pos_mes := 1]
+
+varios_meses[numero_de_cliente == cliente, .(foto_mes, pos_mes)]
+```
+
+Y volvemos a probar:
+
+```{r}
+
+ggplot(varios_meses[numero_de_cliente == cliente,],
+       aes(x = pos_mes, y = mcuentas_saldo)) + geom_point( size=1)
+
+```
+
+
+Ejecutemos varias veces para ver los distintos comportamientos de los diferentes clientes y con diferentes variables:
+
+```{r}
+clase <- "BAJA+2"
+cliente <- sample(
+  varios_meses[foto_mes == 201902 &
+                 clase_ternaria == clase, numero_de_cliente], 
+  1)
+variable <-
+  sample(tail(var_analizar, -3), 1) # Sin variables de cliente, periodo y target
+
+ggplot(varios_meses[numero_de_cliente == cliente,],
+       aes(x = pos_mes, y = get(variable))) + geom_point(size = 1) + ggtitle(variable)
+
+```
+
+```{r}
+clase <- "BAJA+2"
+cliente <- sample(
+  varios_meses[foto_mes == 201902 &
+                 clase_ternaria == clase, numero_de_cliente], 
+  1)
+variable <-
+  sample(tail(var_analizar, -3), 1) # Sin variables de cliente, periodo y target
+
+ggplot(varios_meses[numero_de_cliente == cliente,],
+       aes(x = pos_mes, y = get(variable))) + geom_point(size = 1) + ggtitle(variable)
+
+```
+
+```{r}
+clase <- "BAJA+2"
+cliente <- sample(
+  varios_meses[foto_mes == 201902 &
+                 clase_ternaria == clase, numero_de_cliente], 
+  1)
+variable <-
+  sample(tail(var_analizar, -3), 1) # Sin variables de cliente, periodo y target
+
+ggplot(varios_meses[numero_de_cliente == cliente,],
+       aes(x = pos_mes, y = get(variable))) + geom_point(size = 1) + ggtitle(variable)
+
+
+```
+
+```{r}
+clase <- "BAJA+2"
+cliente <- sample(
+  varios_meses[foto_mes == 201902 &
+                 clase_ternaria == clase, numero_de_cliente], 
+  1)
+variable <-
+  sample(tail(var_analizar, -3), 1) # Sin variables de cliente, periodo y target
+
+ggplot(varios_meses[numero_de_cliente == cliente,],
+       aes(x = pos_mes, y = get(variable))) + geom_point(size = 1) + ggtitle(variable)
+
+
+```
+
+
+Sumamos algunas métricas para comparar:
+
+```{r}
+
+clase <- "BAJA+2"
+cliente <- sample(
+  varios_meses[foto_mes == 201902 &
+                 clase_ternaria == clase, numero_de_cliente], 
+  1)
+variable <-
+  sample(tail(var_analizar,-3), 1) # Sin variables de cliente, periodo y target
+
+ggplot(varios_meses[numero_de_cliente == cliente, ],
+       aes(x = pos_mes, y = get(variable))) + geom_point(size = 1) + ggtitle(variable) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  geom_hline(yintercept = varios_meses[numero_de_cliente == cliente, max(get(variable))], color =
+               'red') +
+  geom_hline(yintercept = varios_meses[numero_de_cliente == cliente, min(get(variable))], color =
+               'black') +
+  geom_hline(yintercept = varios_meses[numero_de_cliente == cliente, mean(get(variable))], color =
+               'green')
+
+
+```
+
+```{r}
+
+clase <- "BAJA+2"
+cliente <- sample(
+  varios_meses[foto_mes == 201902 &
+                 clase_ternaria == clase, numero_de_cliente], 
+  1)
+variable <-
+  sample(tail(var_analizar,-3), 1) # Sin variables de cliente, periodo y target
+
+ggplot(varios_meses[numero_de_cliente == cliente, ],
+       aes(x = pos_mes, y = get(variable))) + geom_point(size = 1) + ggtitle(variable) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  geom_hline(yintercept = varios_meses[numero_de_cliente == cliente, max(get(variable))], color =
+               'red') +
+  geom_hline(yintercept = varios_meses[numero_de_cliente == cliente, min(get(variable))], color =
+               'black') +
+  geom_hline(yintercept = varios_meses[numero_de_cliente == cliente, mean(get(variable))], color =
+               'green')
+
+```
+
+```{r}
+
+clase <- "BAJA+2"
+cliente <- sample(
+  varios_meses[foto_mes == 201902 &
+                 clase_ternaria == clase, numero_de_cliente], 
+  1)
+variable <-
+  sample(tail(var_analizar,-3), 1) # Sin variables de cliente, periodo y target
+
+ggplot(varios_meses[numero_de_cliente == cliente, ],
+       aes(x = pos_mes, y = get(variable))) + geom_point(size = 1) + ggtitle(variable) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  geom_hline(yintercept = varios_meses[numero_de_cliente == cliente, max(get(variable))], color =
+               'red') +
+  geom_hline(yintercept = varios_meses[numero_de_cliente == cliente, min(get(variable))], color =
+               'black') +
+  geom_hline(yintercept = varios_meses[numero_de_cliente == cliente, mean(get(variable))], color =
+               'green')
+
+```
+
+```{r}
+
+clase <- "BAJA+2"
+cliente <- sample(
+  varios_meses[foto_mes == 201902 &
+                 clase_ternaria == clase, numero_de_cliente], 
+  1)
+variable <-
+  sample(tail(var_analizar,-3), 1) # Sin variables de cliente, periodo y target
+
+ggplot(varios_meses[numero_de_cliente == cliente, ],
+       aes(x = pos_mes, y = get(variable))) + geom_point(size = 1) + ggtitle(variable) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  geom_hline(yintercept = varios_meses[numero_de_cliente == cliente, max(get(variable))], color =
+               'red') +
+  geom_hline(yintercept = varios_meses[numero_de_cliente == cliente, min(get(variable))], color =
+               'black') +
+  geom_hline(yintercept = varios_meses[numero_de_cliente == cliente, mean(get(variable))], color =
+               'green')
+
+```
+
+Con nuestras observaciones, vamos a sumar algunas variables a nuestro conjunto de datos con información historica sobre los clientes: 
+
+```{r}
+
+# No es lo más eficiente, pero es claro, mejoraremos más adelante..
+
+varios_meses[, c(
+  "mcaja_ahorro_Paquete_max",
+  "mcaja_ahorro_Paquete_min",
+  "mcaja_ahorro_Paquete_mean"
+) := list(max(mcaja_ahorro_Paquete),
+          min(mcaja_ahorro_Paquete),
+          mean(mcaja_ahorro_Paquete)), by = numero_de_cliente]
+
+cliente <- sample(
+  varios_meses[foto_mes == 201902 &
+                 clase_ternaria == clase, numero_de_cliente], 
+  1)
+
+varios_meses[numero_de_cliente == cliente, ]
+
+```
+
+Veamos como hacer el cálculo de una función personalizada para realizar la agregación:
+
+```{r}
+# Propia: porcentaje de variación entre los dos últimos meses
+mi_agg_debug <- function(x) {
+  # OJOOO!!
+  print(x)
+  #
+  n <- length(x)
+  x[n]/x[n-1]*100
+}
+
+varios_meses[numero_de_cliente == cliente, mcaja_ahorro_Paquete_var_2 := mi_agg_debug(mcaja_ahorro_Paquete), by = numero_de_cliente]
+
+# Observamos que todo funcione bien:
+varios_meses[numero_de_cliente == cliente, .(foto_mes, numero_de_cliente, mcaja_ahorro_Paquete, mcaja_ahorro_Paquete_var_2)]
+```
+
+Lo más importante es poder ver que aplicamos bien la función, validando con casos de ejemplo. Se suelen cometer muchos errores por problemas de código.
+
+Pasamos ahora a dos formas de calcular la tendencia de una variable con una función personalizada, la primera calculando el `Beta` de una regresión:
+
+```{r}
+
+beta <- function (y) {
+  n <- length(y)
+  nsumx2 <- n*sum((1:n)^2)
+  sumx2 <- sum(1:n)^2
+  sumx <- sum(1:n)
+  (sumx*sum(y) - n*sum((1:n)*y))/(sumx2 - nsumx2)
+}
+
+varios_meses[, mcaja_ahorro_Paquete_ten_6 := beta(mcaja_ahorro_Paquete), by = numero_de_cliente]
+
+# Observamos que todo funcione bien:
+varios_meses[numero_de_cliente == cliente, .(foto_mes, numero_de_cliente, mcaja_ahorro_Paquete, mcaja_ahorro_Paquete_ten_6)]
+
+```
+
+Chequeamos que hicimos bien las cuentas:
+
+```{r}
+lm( mcaja_ahorro_Paquete ~ pos_mes, varios_meses[numero_de_cliente == cliente,])
+```
+
+=). Seguimos con otra forma de calcular la tendencia que fue muy usada en anteriores cursadas:
+
+```{r}
+
+media_movil_3 <- function (x) {
+  n <- length(x)
+  n1 <- ifelse(n-3 > 0 ,n - 3, 1)
+  n2 <- ifelse(n-4 > 0 ,n - 4, 1)
+  n3 <- ifelse(n-1 > 0 ,n - 1, 1)
+  mean(x[n1:n])/mean(x[n2:n3])*100 # Una de muchas forma de comparar 2 medias móviles
+}
+
+varios_meses[, mcaja_ahorro_Paquete_mm_3 := media_movil_3(mcaja_ahorro_Paquete), by = numero_de_cliente]
+
+# Observamos que todo funcione bien:
+varios_meses[numero_de_cliente == cliente, .(foto_mes, numero_de_cliente, mcaja_ahorro_Paquete, mcaja_ahorro_Paquete_mm_3)]
+
+
+```
+
+Veamos la importancia de las variables, si solo incluimos la variable original y las generadas:
+
+```{r}
+m2 <- fmodelo.train(varios_meses[foto_mes == 201902, .(mcaja_ahorro_Paquete, mcaja_ahorro_Paquete_max,mcaja_ahorro_Paquete_mean, mcaja_ahorro_Paquete_min, mcaja_ahorro_Paquete_mm_3, mcaja_ahorro_Paquete_ten_6)], clases_febrero)
+
+xgb.importance(c("mcaja_ahorro_Paquete","mcaja_ahorro_Paquete_max","mcaja_ahorro_Paquete_mean","mcaja_ahorro_Paquete_min","mcaja_ahorro_Paquete_mm_3","mcaja_ahorro_Paquete_ten_6"),m2)
+```
+
+¿Conclusiones?
+
+* ¿Qué otras variables de agregadas considera que son buenas predictoras?
+
+Veamos la forma que utiliza el script `R\FeatureEngineering\fe_historia.R` para ver como podemos "masivizar (?)" el cálculo de variables históricas. Luego pasemos por `R\FeatureEngineering\fe_historia_fast.R`, parece morder, pero con un poco de paciencia se pueden lograr grandes resultados.
+
+Tarea<
+
+* Revise variable por variable y determine que nuevas variables puede sumar al conjunto de datos. 
+* Construya las variables para la semana que viene. 

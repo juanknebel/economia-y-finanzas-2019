@@ -1,0 +1,434 @@
+---
+title: "E.D.A.: Exploratory data analysis"
+author: "Alejandro Bolaños"
+date: "2019-08-18"
+version: 0.9 
+output: 
+  html_document:
+    theme: spacelab
+    highlight: monochrome
+    df_print: paged
+#    toc: true
+#    toc_depth: 2
+
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+> If the statistics are boring, then you've got the wrong numbers.
+> --- Edward R. Tufte
+
+Una de las partes más importantes de nuestro trabajo es entender las variables con las que vamos a trabajar.  
+
+Primero levantamos en memoria el conjunto de datos entero, de esta forma vamos a poder explorar los mismos de forma rápida y eficiente. En caso de no disponer de un equipo con la capacidad de almacener el volumen en memoria, se podrá analizar mes a mes de forma individual, o recurrir a la nube.
+
+```{r setup }
+# Limpiamos los objectos del entorno que se encuentran memoria
+
+rm( list=ls() )
+gc()
+
+```
+
+```{r Levantar DS }
+
+library( "data.table")
+ds  <-  data.table::fread("../datasetsOri/paquete_premium.txt", header=TRUE, sep="\t")
+
+```
+
+Visualizamos las primeras filas
+
+```{r}
+
+head(ds, 10)
+
+```
+
+Leamos la descripción de las variables compartida en el DropBox, identifiquemos que tipo de variables son:
+
+* Numérica
+* Categórica
+* Ordinal
+
+Empezamos poniendo el foco sobre la variable target mes a mes, tratamos de entender la cantidad de churn
+
+```{r}
+
+ds_foto_mes <- dcast(ds, foto_mes ~ clase_ternaria,
+                     length, 
+                     subset = (foto_mes <= 201904), 
+                     value.var = "clase_ternaria" )
+ds_foto_mes
+
+```
+
+Consulta: Si aplicamos el filtro anterior en el data.table y ejecutamos: ¿Por qué tarda sustancialmente más?
+
+```{r}
+
+ds_foto_mes <- dcast(ds[foto_mes <= 201904], foto_mes ~ clase_ternaria,
+                     length, 
+                     value.var = "clase_ternaria" )
+
+```
+
+Gráfiquemos para empezar a entender la dinámica del problema.
+
+```{r}
+
+library(ggplot2)
+
+# Notar que se agrega la columna sin asignación
+ds_foto_mes[, c("TOTAL","x") := list(`BAJA+1` + `BAJA+2` + CONTINUA, .I) ]
+ds_foto_mes
+
+ggplot(ds_foto_mes, aes(x = x, y = TOTAL))+
+    geom_line(color="green", size = 1.2)+
+    scale_x_continuous(labels = ds_foto_mes$foto_mes, breaks = 1:max(ds_foto_mes$x), name="Foto Mes") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+    ggtitle("Cantidad de personas premium a lo largo de los últimos años")
+
+```
+
+```{r}
+
+#Agregamos los ratios
+
+ds_foto_mes[, c("R_BAJAS1","R_BAJAS2") := list(`BAJA+1` / TOTAL,`BAJA+2` / TOTAL)]
+ds_foto_mes
+
+# Adaptamos la tabla para visualizar con ggplot
+ds_ratios = melt(ds_foto_mes,id.vars = c("foto_mes", "x"),
+                measure.vars = c("R_BAJAS1", "R_BAJAS2"))
+ds_ratios
+
+
+ggplot(ds_ratios, aes(x = x, y = value))+
+  geom_line(aes(colour = variable), size = 1.2) +
+  scale_x_continuous(labels = unique(ds_ratios$foto_mes), breaks = seq(1,34,1), name="Foto Mes") +
+  scale_y_continuous(name="% Churn") + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("Variación del Churn a lo largo de los últimos 2 años") 
+
+```
+
+Por último evaluemos la tasa de bajas / nuevos
+
+```{r}
+ds_foto_mes[, "NUEVOS" := TOTAL - (shift(CONTINUA, 1, type="lag") + shift(`BAJA+2`, 1, type="lag"))]
+
+ds_foto_mes[, "R_BAJAS_NUEVOS" := `BAJA+1` / NUEVOS]
+
+ggplot(ds_foto_mes, aes(x = x, y = R_BAJAS_NUEVOS))+
+    geom_line(color="blue", size = 1.2)+
+    scale_x_continuous(labels = ds_foto_mes$foto_mes, breaks = 1:max(ds_foto_mes$x), name="Foto Mes") +
+    geom_hline(yintercept=1, linetype="dashed", color = "red") +
+    geom_text(aes(2,.97,label = "Problemas", color="red"), show.legend = FALSE) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+    ggtitle("Ratio entre la cantidad de Bajas y las Altas")
+
+```
+
+
+Examinemos la estructura de las variables independientemente, en principio solo sobre un único mes. Exploremos a la par de la descripción de las tablas. 
+
+Veamos primero las variables del tipo texto.
+
+```{r}
+
+abril <- ds[foto_mes == 201904,]
+
+library(skimr)
+skim_with(numeric = list(median = median, hist = NULL),
+          integer = list(median = median, n_unique = n_unique, hist = NULL)
+          )
+
+
+desc <- as.data.table(skim_to_wide(abril))
+
+desc[type == "character", c("variable", show_skimmers("character")[[1]])]
+
+```
+
+Las variables de tipo punto flotante ("números reales"):
+
+```{r}
+
+desc[type == "numeric", c("variable", show_skimmers("numeric")[[1]])]
+
+```
+
+Y las variables con números enteros:
+
+```{r}
+
+desc[type == "integer", c("variable", show_skimmers("integer")[[1]])]
+
+```
+
+
+* ¿Qué significa que una variable numérica tenga solo 5 valores distintos?
+* ¿Es útil una variable categórica con 120 valores distintos? 
+* ¿Cómo son las variables fechas?
+* ¿Cómo supone que van a afectar los valores ausentes?
+
+Veamos como se comporta una variable a través de la historia, tomando una cualquiera sin pensar en el problema.
+
+```{r}
+
+ggplot(ds, aes(group=foto_mes, y=mcomisiones_mantenimiento)) + geom_boxplot()
+
+```
+
+* ¿Por qué se expande la distribución mes a mes? 
+
+Veamoslo con un poco de zoom:
+
+```{r}
+
+ggplot(ds, aes(group=foto_mes, y=mcomisiones_mantenimiento)) + 
+  geom_boxplot() + 
+  coord_cartesian(ylim = c(-1000, 1000))
+
+```
+
+* ¿Qué sucede con la mediana?
+* 
+
+Y numéricamente
+
+```{r}
+ds[,.(mediana = median(mcomisiones_mantenimiento),
+                       minimo = min(mcomisiones_mantenimiento),
+                       maximo = max(mcomisiones_mantenimiento),
+                       media = mean(mcomisiones_mantenimiento)), by = foto_mes]
+
+```
+
+¿Y si empezamos a ver como se comportan los estadísticos según la clase?
+
+```{r}
+ds[,.(mediana = median(mcomisiones_mantenimiento),
+                       minimo = min(mcomisiones_mantenimiento),
+                       maximo = max(mcomisiones_mantenimiento),
+                       media = mean(mcomisiones_mantenimiento)), by = .(foto_mes, clase_ternaria)]
+
+```
+
+Apuntemos a algo más visual para ver esas diferencias:
+
+```{r}
+# Overlaid histograms
+ggplot(abril, aes(x=mcomisiones_mantenimiento)) +
+  facet_grid(clase_ternaria ~ .) +
+  geom_density()
+
+```
+
+Ya volveremos con las variables continuas, pasemos ahora a una variable categórica. Tomemos Visa_cuenta_estado (esta no la elegimos ya desde un criterio no tan aleatorio)
+
+Vamos a ver empezar a ver de forma binaria la clase objetivo.
+
+```{r}
+
+ds_visa_estado <- dcast(abril,Visa_cuenta_estado  ~ clase_ternaria, 
+                        length, 
+                        value.var = "clase_ternaria" )
+
+ds_visa_estado
+
+```
+
+Graficamos para darnos una idea de la potencia discriminate que tiene esta variable:
+
+```{r}
+
+ds_visa_estado[, total := (`BAJA+1`+`BAJA+2`+CONTINUA)]
+ds_visa_estado[, ratio_baja := `BAJA+2` / total]
+ds_visa_estado[, Visa_cuenta_estado := factor(Visa_cuenta_estado)]
+
+# Churn en abril 2019
+churn_abril = ds_foto_mes[foto_mes == 201904, R_BAJAS2] 
+
+ggplot(ds_visa_estado, aes(x=Visa_cuenta_estado, y=total)) +
+  geom_bar(stat="identity", fill="blue") + 
+  ggtitle("Cantidad de clientes por categoría de Visa_cuenta_estado")
+
+ggplot(ds_visa_estado, aes(x=Visa_cuenta_estado, y=ratio_baja)) +
+  geom_bar(stat="identity", fill="green") +  geom_hline(yintercept = churn_abril, color="black") + 
+  ggtitle("Ratio de churn por categoría de Visa_cuenta_estado")
+
+
+```
+
+Evaluemos la ganancia de cada una de las categorías para *Visa_cuenta_estado*
+
+```{r}
+
+ds_visa_estado[, Ganancia := 19500 * `BAJA+2` - 500 * (CONTINUA + `BAJA+1`) ]
+ds_visa_estado
+
+```
+
+Y calculemos la ganancia total, si son quedamos sólo con los que nos "da de comer"
+
+```{r}
+
+cat("Ganancia =",ds_visa_estado[Ganancia > 0, sum(Ganancia)])
+
+```
+
+Confiados en que encontramos una buena forma de hacer dinero, sumamos la variable *Master_cuenta_estado*
+
+```{r}
+ds_tc_estado <- dcast(abril,Visa_cuenta_estado + Master_cuenta_estado  ~ clase_ternaria, 
+                        length, 
+                        value.var = "clase_ternaria" )
+ds_tc_estado
+ds_tc_estado[, Ganancia := 19500 * `BAJA+2` - 500 * (CONTINUA + `BAJA+1`) ]
+
+cat("Ganancia =",ds_tc_estado[Ganancia > 0, sum(Ganancia)])
+```
+
+* ¿Qué pasó con la ganancia? y ¿Por qué?
+
+
+Una métrica muy común para las variables discretas en el mundo de los modelos de riesgo es el [Information Value](https://www.listendata.com/2015/03/weight-of-evidence-woe-and-information.html) que se calcula agrupando el WoE de cada categoría. Se puede expandir el análisis a variables númericas discretizando las mismas. Se desarrollará en un spin-off.
+
+Veamos una interacción de la ganancia con una variable entera. Tomemos *tmovimientos_ultimos90dias*. Veamos como se distribuye con respecto a las clases:
+
+```{r}
+
+abril[,bin_tmov := cut(tmovimientos_ultimos90dias, 100)]
+ds_tmov <- abril[ , .(n = .N), by = .(bin_tmov,clase_ternaria)]
+ds_tmov
+# Elimino la variable generada
+abril[,bin_tmov:=NULL]
+
+ggplot(ds_tmov , aes(x=bin_tmov, y = n)) +
+    facet_grid(clase_ternaria ~ ., scales = "free_y") +
+      theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    geom_col()
+
+```
+
+Calculemos la ganancia para cada entero de la variable:
+
+```{r}
+
+ds_tmov <- dcast(abril, 
+                 tmovimientos_ultimos90dias ~ clase_ternaria, 
+                 length, value.var = "clase_ternaria")
+
+ds_tmov[, Ganancia := 19500 * `BAJA+2` - 500 * (CONTINUA + `BAJA+1`) ]
+
+ds_tmov
+```
+
+Genero una columna con la ganancia acumulada y la cantidad que representa:
+
+```{r}
+ds_tmov[,gan_acum := cumsum( Ganancia )]
+ds_tmov[,baja2_n := cumsum(`BAJA+2`) ]
+ds_tmov[,total := cumsum(`BAJA+1` + CONTINUA) ]
+ds_tmov[,ratio := baja2_n / total ]
+ds_tmov
+
+```
+
+Y graficamos su curva de ganancia, para los primero valores que tienen sentido
+
+```{r}
+
+ggplot(ds_tmov[tmovimientos_ultimos90dias < 36], aes(x = tmovimientos_ultimos90dias, y = gan_acum))+
+    geom_line(color="green", size = 1.2)+
+    theme_minimal() +
+    geom_hline(yintercept=0, linetype="dashed", color = "red") +
+    ggtitle("Ganancia acumulada en relación a la variable tmovimientos_ultimos90dias")
+
+```
+
+Nos resta volver a analizar una variable numérica con relación a la ganancia, trabajaremos con la variable *mcuentas_saldo*
+
+```{r}
+ggplot(abril, aes(x=mcuentas_saldo)) + 
+  facet_grid(clase_ternaria ~ .) +
+ # coord_cartesian(xlim=c(0,1000000)) +
+  geom_density()
+```
+
+Para calcular la ganancia, vamos a cortar la variable en *n* partes, y calcularemos la ganancia de cada uno.
+
+```{r}
+abril[,bin_saldo := cut(mcuentas_saldo, 3000)]
+ds_saldo <- dcast(abril, 
+                 bin_saldo ~ clase_ternaria, 
+                 length, value.var = "clase_ternaria")
+
+# Elimino la variable generada
+abril[,bin_saldo:=NULL]
+
+ds_saldo[, Ganancia := 19500 * `BAJA+2` - 500 * (CONTINUA + `BAJA+1`) ]
+ds_saldo[,gan_acum := cumsum( Ganancia )]
+ds_saldo[,baja2_n := cumsum(`BAJA+2`) ]
+ds_saldo[,total := cumsum(`BAJA+1` + CONTINUA) ]
+ds_saldo[,ratio := baja2_n / total ]
+ds_saldo[,n := .I ]
+ds_saldo
+```
+
+
+Gráficamos la curva de ganancia:
+
+```{r}
+ggplot(ds_saldo[n < 26], aes(x = n, y = gan_acum))+
+    geom_line(color="green", size = 1.2)+
+    theme_minimal() +
+    geom_hline(yintercept=0, linetype="dashed", color = "red") +
+    ggtitle("Ganancia acumulada en relación a la variable msaldo_cuenta")
+```
+
+Y observamos los valores máximos y donde se encuentran:
+
+```{r}
+# Ganancia máxima
+ds_saldo[gan_acum == max(gan_acum), gan_acum]
+
+# Intervalo de ganancia máxima
+ds_saldo[gan_acum == max(gan_acum), bin_saldo]
+```
+
+Para poder como interactuan varias variables, vamos a utilizar un árbol de decisión.
+
+```{r}
+library(rpart)
+library( "rpart.plot" )
+
+modelo   <-  rpart( clase_ternaria ~ .,   data = abril,   cp=0.005,  xval=0 )
+
+# summary(modelo)
+
+prp( modelo, extra=101, digits=5, branch=1, type=4, varlen=0, faclen=0 )
+```
+
+Y vemos cual es la importancia de las variables para entender cuales son las más discriminantes.
+
+```{r}
+as.data.frame(modelo$variable.importance)
+```
+
+*Preguntas*:
+
+* ¿ Cómo podemos llevar este análisis de forma masiva al resto de las variables?
+* ¿ Es posible que haya variables que se comporten parecido? ¿Como podemos detectar esos grupos de variables? ¿De que podría ser útil contar con esos grupos?
+* ¿ Qué otras variables crearía para lograr explicar el churn?
+
+*Tarea*:
+
+* Explore otras variables tomando como guía la importancia de variables del árbol.
+* Construya nuevas variables y vea que tan buenas son. Ingrese las mismas al árbol y vea en que posición se encuentran en la importancia de variables.

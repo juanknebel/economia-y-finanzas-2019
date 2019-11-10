@@ -3,7 +3,7 @@
 #paso los campos fecha a la cantidad de dias de la foto
 
 
-#source("~/cloud/cloud1/codigoR/FeatureEngineering/fechas_relativas.r")
+#source("~/cloud/cloud1/R/FeatureEngineering/fechas_relativas.r")
 
 
 #limpio la memoria
@@ -13,9 +13,9 @@ gc()
 
 
 library("data.table")
-library("dplyr")
 
 
+kcarpeta_datasetsOri     <-  "~/cloud/cloud1/datasetsOri/"
 kcarpeta_datasets        <-  "~/cloud/cloud1/datasets/"
 
 kcampos_separador        <-  "\t"
@@ -29,7 +29,7 @@ karchivo_salida_sufijo   <-  "_dias.txt"
 
 #------------------------------------------------------
 #Esta funcion calcula la cantidad de dias entre la foto_mes y la fecha
-#la foto_mes 201804 se interpreta como la fecha "20180501 00:00:00"
+#la foto_mes 201904 se interpreta como la fecha "20190501 00:00:00"
 
 fdias_entre  = function(pfoto_mes, pfecha)
 {
@@ -57,7 +57,7 @@ fguardar_foto  = function(pfoto_mes, pdataset)
 
 
 
-setwd(kcarpeta_datasets)
+setwd(kcarpeta_datasetsOri)
 
 #lectura rapida del dataset  usando fread  de la libreria  data.table
 dataset <- fread( cmd=paste("gunzip -cq", karchivo_entrada_zip), header=TRUE, sep=kcampos_separador) 
@@ -69,33 +69,40 @@ ncol(dataset)
 
 #paso los campos fecha a dias relativos
 
-dataset  <- mutate(dataset,
-                    Master_Fvencimiento    = fdias_entre(get(kcampo_foto), Master_Fvencimiento),
-                    Master_Finiciomora     = fdias_entre(get(kcampo_foto), Master_Finiciomora),
-                    Master_fultimo_cierre  = fdias_entre(get(kcampo_foto), Master_fultimo_cierre),
-                    Master_fechaalta       = fdias_entre(get(kcampo_foto), Master_fechaalta),
-                    Visa_Fvencimiento      = fdias_entre(get(kcampo_foto), Visa_Fvencimiento),
-                    Visa_Finiciomora       = fdias_entre(get(kcampo_foto), Visa_Finiciomora),
-                    Visa_fultimo_cierre    = fdias_entre(get(kcampo_foto), Visa_fultimo_cierre),
-                    Visa_fechaalta         = fdias_entre(get(kcampo_foto), Visa_fechaalta)
-                 )
+dataset[ , Master_Fvencimiento    := fdias_entre(get(kcampo_foto), Master_Fvencimiento) ]
+dataset[ , Master_Finiciomora     := fdias_entre(get(kcampo_foto), Master_Finiciomora) ]
+dataset[ , Master_fultimo_cierre  := fdias_entre(get(kcampo_foto), Master_fultimo_cierre) ]
+dataset[ , Master_fechaalta       := fdias_entre(get(kcampo_foto), Master_fechaalta) ]
 
+dataset[ , Visa_Fvencimiento    := fdias_entre(get(kcampo_foto), Visa_Fvencimiento) ]
+dataset[ , Visa_Finiciomora     := fdias_entre(get(kcampo_foto), Visa_Finiciomora) ]
+dataset[ , Visa_fultimo_cierre  := fdias_entre(get(kcampo_foto), Visa_fultimo_cierre) ]
+dataset[ , Visa_fechaalta       := fdias_entre(get(kcampo_foto), Visa_fechaalta) ]
 
 
 
 #ordeno el dataset
-dataset   <- as.data.table( dataset %>% arrange( foto_mes, numero_de_cliente) )
+setorder(  dataset,  foto_mes, numero_de_cliente )
 
 
 #obtengo todas las foto_mes distintas que hay en el dataset grande
-fotos_distintas <-   dataset %>% distinct(get(kcampo_foto)) %>% pull()
+fotos_distintas <-   unique( dataset[ , get(kcampo_foto)] )
 
 #grabo los archivos de cada mes
+setwd(kcarpeta_datasets)
 lapply( fotos_distintas,  fguardar_foto,  pdataset=dataset) 
 
 
 #grabo el archivo completo
-fwrite( dataset,  file="~/cloud/cloud1/datasets/paquete_premium_dias.txt", sep=kcampos_separador, na="", row.names=FALSE) 
+fwrite( dataset,  
+        file="~/cloud/cloud1/datasets/paquete_premium_dias.txt", 
+        sep=kcampos_separador, na="", row.names=FALSE) 
+
+#grabo solo el ultimo ano
+fwrite( dataset[ foto_mes>=201805 & foto_mes<=201904,  ],
+        file="~/cloud/cloud1/datasets/paquete_premium_dias_1ano.txt", 
+        sep=kcampos_separador, na="", row.names=FALSE) 
+
 
 
 #limpio la memoria

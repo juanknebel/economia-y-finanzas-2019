@@ -10,8 +10,8 @@ library( "rpart" )
 
 #cargo el dataset
 #se hace el cat  para que se lea rapido el archivo del bucket
-setwd( "~/cloud/cloud1/datasets/")
-dataset_grande <-  fread( cmd="cat  paquete_premium_dias.txt" )
+setwd( "M:\\work\\")
+dataset_grande <-  fread( "paquete_premium_dias_1ano.txt" )
 
 
 #ordeno el dataset, para poder crear variables del tipo LAG
@@ -111,7 +111,7 @@ ganancia2
 #Pasamos de los lamentables 6357000  a muy respetables 6830000 
 
 #ahora veo cuales son las variables mas importantes del arbol
-setwd( "~/cloud/cloud1/work/")
+setwd( "M:\\work\\")
 summary( modelo , file="modelo2.txt" )
 
 #desde el bucket,  leer el archivo modelo2.txt
@@ -153,7 +153,7 @@ ganancia3
 #Pasamos de 6830000  a  7055500  (un humilde incremento de 225500 )
 
 #Que tan importante es en el nuevo modelo la recien creada tarjeta_cuenta_estado ?
-setwd( "~/cloud/cloud1/work/")
+setwd( "M:\\work\\")
 summary( modelo , file="modelo3.txt" )
 
 #viendo el archivo  modelo3.txt , vemos que tarjeta_cuenta_estado es la variable MAS IMPORTANTE
@@ -202,7 +202,7 @@ ganancia4
 #Pasamos de 7055500 a 7023000  ( Descendimos !  )
 
 #Que tan importante es en el nuevo modelo  ?
-setwd( "~/cloud/cloud1/work/")
+setwd( "M:\\work\\")
 summary( modelo , file="modelo4.txt" )
 
 
@@ -290,7 +290,7 @@ ganancia6
 
 #Pero aqui SI aparece lo interesante !
 #Que variables son las mas importantes  ?
-setwd( "~/cloud/cloud1/work/")
+setwd( "M:\\work\\")
 summary( modelo , file="modelo6.txt" )
 
 
@@ -330,7 +330,7 @@ ganancia7
 
 
 #Que variables son las mas importantes  ?
-setwd( "~/cloud/cloud1/work/")
+setwd( "M:\\work\\")
 summary( modelo , file="modelo7.txt" )
 
 
@@ -376,7 +376,7 @@ ganancia8
 #Ganancia 7140500  
 
 #Que variables son las mas importantes  ?
-setwd( "~/cloud/cloud1/work/")
+setwd( "M:\\work\\")
 summary( modelo , file="modelo8.txt" )
 
 

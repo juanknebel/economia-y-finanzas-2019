@@ -1,0 +1,647 @@
+---
+title: "Hiper Parametrización 2 - La venganza"
+author: "Alejandro Bolaños"
+date: "2019-10-21"
+version: 0.7
+output: 
+  html_document:
+    theme: spacelab
+    highlight: monochrome
+    df_print: paged
+#    toc: true
+#    toc_depth: 2
+
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+> ... premature optimization is the root of all evil --- Donald Knuth
+
+> Success is a lousy teacher. It seduces smart people into thinking they can't lose.  --- Bill Gates
+
+En este notebook nos empaparemos con detalles de la hiperparametrización con el resultado de las optimizaciones. Primero veremos rapidamente como funciona la optimización bayesiana con dos ejemplos, ya utilizando la librería mlrMBO, que nos dan muchas más opciones que la que veníamos usando:
+
+
+```{r}
+
+rm( list=ls() )
+gc()
+
+```
+
+```{r}
+
+library(ggplot2)
+library(mlrMBO)
+
+configureMlr(show.learner.output = FALSE)
+set.seed(1)
+
+obj.fun = makeSingleObjectiveFunction(
+  name = "Sine",
+  fn = function(x) sin(x),
+  par.set = makeNumericParamSet(lower = 3, upper = 13, len = 1),
+  global.opt.value = -1
+)
+
+ctrl = makeMBOControl(propose.points = 1)
+ctrl = setMBOControlTermination(ctrl, iters = 10L)
+ctrl = setMBOControlInfill(ctrl, crit = makeMBOInfillCritEI(),
+                           opt = "focussearch", opt.focussearch.points = 500L)
+
+lrn = makeMBOLearner(ctrl, obj.fun)
+
+design = generateDesign(6L, getParamSet(obj.fun), fun = lhs::maximinLHS)
+
+run = exampleRun(obj.fun, design = design, learner = lrn,
+                 control = ctrl, points.per.dim = 100, show.info = TRUE)
+
+plotExampleRun(run, densregion = TRUE, gg.objects = list(theme_bw()), pause = FALSE)
+
+```
+```{r}
+
+set.seed(1)
+configureMlr(show.learner.output = FALSE)
+
+obj.fun = makeBraninFunction()
+
+ctrl = makeMBOControl(propose.points = 1L)
+ctrl = setMBOControlTermination(ctrl, iters = 10L)
+ctrl = setMBOControlInfill(ctrl, crit = makeMBOInfillCritEI(),
+                           opt = "focussearch", opt.focussearch.points = 20L)
+
+lrn = makeMBOLearner(ctrl, obj.fun)
+design = generateDesign(10L, getParamSet(obj.fun), fun = lhs::maximinLHS)
+
+run = exampleRun(obj.fun, design = design, learner = lrn, control = ctrl,
+                 points.per.dim = 50L, show.info = TRUE)
+
+print(run)
+
+plotExampleRun(run, gg.objects = list(theme_bw()), pause = FALSE)
+
+```
+
+Algunos links que pueden ser de algún interés:
+
+* https://www.kdnuggets.com/2018/10/intuitions-behind-bayesian-optimization-gaussian-processes.html
+* http://mlrmbo.mlr-org.com/articles/mlrMBO.html
+
+Vamos a analizar de una forma similar nuestra objetivo, cargando previamente las funciones auxiliares para poder trabajar más cómodos:
+
+```{r}
+
+library( "data.table" )
+vsemillas <- c(810757,482071,340979,446441,917513)
+
+periodo_delta <- function (foto_mes, delta) {
+  
+  len <-2
+  
+  step_cant <- delta
+  
+  step <- paste0(step_cant, " months")
+  
+  resultado <-  as.integer(strftime(seq(
+    as.Date(paste0(foto_mes, "01"), format = "%Y%m%d"),
+    length = len,
+    by = step
+  ), format = "%Y%m"))
+  
+  return(resultado[2])
+
+  }
+
+periodos_delta_serie <- function (foto_mes, delta) {
+  sapply(0:(delta), periodo_delta, foto_mes=foto_mes)
+}
+
+```
+
+A la carga del mes le vamos a sacar la carga de las nuevas clases, simplemente queremos trabajar con la búsqueda de parámetros en su estado más simple, prediciendo solamente la clase `BAJA+2` 
+
+```{r}
+
+cargar_meses <- function(foto_mes, diferencia) {
+  dataset_list <- list()
+  clases_vector <- c()
+  
+  for (fm in periodos_delta_serie(foto_mes, diferencia)) {
+    dataset_mes <- readRDS(paste0("../datasets/dias/", fm, ".RDS"))
+
+    clases <- ifelse(dataset_mes[, clase_ternaria] == "BAJA+2", 1, 0)
+    dataset_mes[, clase_ternaria := NULL]
+    dataset_mes[, numero_de_cliente := NULL]
+    dataset_mes[, foto_mes := NULL]
+    
+    dataset_list[[as.character(fm)]] <- dataset_mes
+    clases_vector <- c(clases_vector, clases)
+  }
+  resultado <- list()
+  resultado[["datos"]] <- rbindlist(dataset_list)
+  resultado[["clases"]] <- clases_vector
+  resultado
+}
+
+
+```
+
+Y trabajaremos por su velocidad con LightGBM
+
+```{r}
+library(lightgbm)
+
+modelar_lgbm <- function(ds,
+           target,
+           param = list()) { 
+
+  dtrain_lgm <- lgb.Dataset(data.matrix(ds), label = target)
+
+  params <- c(param, list(objective = "binary", metric = "auc"))
+
+  modelo <- lgb.cv(params,
+                dtrain_lgm,
+                tree_learner="serial",
+                25,
+                nfold = 5,
+                stratified = TRUE,
+                verbose = -1)
+  modelo
+}
+```
+
+Y vamos a trabjar con una muestra, para acortar los tiempos de procesamiento:
+
+```{r}
+# Muestrea, quedandose con todos los elementos de la clases y una cantidad 
+# definida del resto. Devuelve un vector Booleano.
+
+tomar_muestra <- function(datos, resto=10000 ) {
+      t <- datos$clases == 1
+      r <- rep(FALSE, length(datos$clases))
+      r[!t][sample.int(resto,n=(length(datos$clases)-sum(datos$clases)))] <- TRUE
+      t | r
+}
+
+abril2018 <- cargar_meses(201804,0)
+abril2018$muestra <- tomar_muestra(abril2018, resto=20000)
+
+sum(abril2018$clases)
+sum(abril2018$muestra)
+
+t0 <- Sys.time()
+m <- modelar_lgbm(abril2018$datos, abril2018$clases)
+t1 <- Sys.time()
+print(t1-t0)
+
+t0 <- Sys.time()
+m <- modelar_lgbm(abril2018$datos[abril2018$muestra], abril2018$clases[abril2018$muestra])
+t1 <- Sys.time()
+print(t1-t0)
+
+m$best_score
+
+```
+
+Vamos entonces antes de optimizar los parámetros, a explorar, cual grid search, uno de los mismos, para entender en que escenario nos encontramos, buscando el mejor número para `learning_rate`
+
+```{r, eval=FALSE}
+
+
+resultado <- list()
+resultado$x <- seq(from = 0.01, to = 1, by = 0.02)
+resultado$y <- c()
+
+for (v in resultado$x) {
+  resultado$y <-
+    c(
+      resultado$y,
+      modelar_lgbm(
+        abril2018$datos[abril2018$muestra],
+        abril2018$clases[abril2018$muestra],
+        param = list(learning_rate = v)
+      )
+    )
+}
+
+saveRDS(resultado, "resultados/11_res1.RDS")
+
+```
+
+Y hacemos lo que más me gusta, graficar:
+
+```{r}
+
+res <- readRDS("resultados/11_res1.RDS")
+
+d <- data.frame(x=res$x , y=sapply(res$y, function(x) x$best_score))
+
+ggplot(d, aes(x,y))  + 
+  geom_point()
+
+```
+
+Si uno compara con los ejemplos anteriores, creo que la principal diferencia que uno encuentra es la fuerte presencia de ruido. Recordando la no menor referencia, de que lo que hicimos fue un `CV`. O sea, los puntos anteriores se vieron suavizados por la media de varias iteraciones!!!
+
+Buscamos el punto máximo:
+
+```{r}
+max(d$y)
+d$x[which.max(d$y)]
+
+```
+
+Aún así el máximo que nos ofrece nos convence (gráficamente). Para el resultado anterior tuvimos que calcular 50 puntos, veamos si **BO** nos ayuda:
+
+```{r, eval= FALSE}
+
+
+set.seed(vsemillas[1])
+
+obj.fun = makeSingleObjectiveFunction(
+  name = "learning_rate",
+  fn = function(x)
+    - modelar_lgbm(
+      abril2018$datos[abril2018$muestra],
+      abril2018$clases[abril2018$muestra],
+      param = list(learning_rate = x)
+    )$best_score,
+  par.set = makeNumericParamSet(lower = 0.01, upper = 1),
+  has.simple.signature = FALSE,
+  global.opt.value = -1
+)
+
+ctrl = makeMBOControl(propose.points = 1)
+ctrl = setMBOControlTermination(ctrl, iters = 10L)
+ctrl = setMBOControlInfill(
+  ctrl,
+  crit = makeMBOInfillCritEI(),
+  opt = "focussearch",
+  opt.focussearch.points = 500L
+)
+
+lrn = makeMBOLearner(ctrl, obj.fun)
+design = generateDesign(5L, getParamSet(obj.fun), fun = lhs::maximinLHS)
+
+surr.km <-
+  makeLearner("regr.km", predict.type = "se", covtype = "matern3_2")
+
+
+run = exampleRun(
+  obj.fun,
+  design = design,
+  learner = surr.km,
+  control = ctrl,
+  points.per.dim = 25,
+  show.info = TRUE
+)
+
+saveRDS(run, "resultados/11_res2.RDS")
+```
+
+
+```{r}
+
+run <- readRDS("resultados/11_res2.RDS")
+plotExampleRun(run, densregion = TRUE, gg.objects = list(theme_bw()), pause=FALSE)
+print(run)
+
+```
+
+Es muy interesante cómo encontró una muy buena solución, algo menor que la encontrada por `Grid Search` pero finalmente con muchas menos iteraciones. 
+
+Podemos probar parametrizar otras forma la búsqueda, hay opciones para trabajar con ruido, pero dejamos al alumno explorar las mismas, mientras continuamos por esta senda, ya que el resultado devuelto nos parecio bueno.
+
+Repetimos el análisis anterior, pero con otro parámetro, `L2`
+
+```{r, eval= FALSE}
+
+resultado <- list()
+resultado$x <- seq(from = 0, to = 50, by = 1)
+resultado$y <- c()
+
+for (v in resultado$x) {
+  resultado$y <-
+    c(
+      resultado$y,
+      modelar_lgbm(
+        abril2018$datos[abril2018$muestra],
+        abril2018$clases[abril2018$muestra],
+        param = list(lambda_l2 = v)
+      )
+    )
+}
+
+saveRDS(resultado, "resultados/11_res3.RDS")
+
+```
+
+```{r}
+
+res <- readRDS("resultados/11_res3.RDS")
+
+d <- data.frame(x=res$x , y=sapply(res$y, function(x) x$best_score))
+
+ggplot(d, aes(x,y))  + 
+  geom_point()
+
+```
+
+Nos encontramos con un parámetros con mucho más ruido.
+
+```{r}
+
+max(d$y)
+d$x[which.max(d$y)]
+
+```
+
+Cambiando la función objetivo para buscar nuestro nuevo parámetro, aplicamos nuevamente **MBO**:
+
+```{r, eval=FALSE}
+
+set.seed(vsemillas[1])
+
+obj.fun = makeSingleObjectiveFunction(
+  name = "L2",
+  fn = function(x)
+    - modelar_lgbm(
+      abril2018$datos[abril2018$muestra],
+      abril2018$clases[abril2018$muestra],
+      param = list(lambda_l2 = x)
+    )$best_score,
+  par.set = makeNumericParamSet(lower = 0.0, upper =  50.0),
+  has.simple.signature = FALSE,
+  global.opt.value = -1
+)
+
+ctrl = makeMBOControl(propose.points = 1)
+ctrl = setMBOControlTermination(ctrl, iters = 10L)
+ctrl = setMBOControlInfill(
+  ctrl,
+  crit = makeMBOInfillCritEI(),
+  opt = "focussearch",
+  opt.focussearch.points = 10L
+)
+
+lrn = makeMBOLearner(ctrl, obj.fun)
+design = generateDesign(5L, getParamSet(obj.fun), fun = lhs::maximinLHS)
+
+surr.km <-
+  makeLearner("regr.km", predict.type = "se", covtype = "matern3_2")
+
+run = exampleRun(
+  obj.fun,
+  design = design,
+  learner = surr.km,
+  control = ctrl,
+  points.per.dim = 25,
+  show.info = TRUE
+)
+
+saveRDS(run, "resultados/11_res4.RDS")
+```
+
+
+
+```{r}
+
+run <- readRDS("resultados/11_res4.RDS")
+plotExampleRun(run, densregion = TRUE, gg.objects = list(theme_bw()), pause=FALSE)
+print(run)
+
+```
+
+Pero como bien sabemos, los optimos unidimensionales, no necesariamente son los optimos en todas sus dimensiones. Busquemos el optimo de las dos variables conjuntas:
+
+
+```{r, eval = FALSE }
+objetivo <- function(x) {
+  - modelar_lgbm(
+      abril2018$datos[abril2018$muestra],
+      abril2018$clases[abril2018$muestra],
+      param = list(lambda_l2 = x$l2, learning_rate = x$lr)
+    )$best_score
+}
+
+set.seed(vsemillas[1])
+
+obj.fun = makeSingleObjectiveFunction(
+  name = "2 parametros",
+  fn = objetivo,
+  par.set = makeParamSet(
+    makeNumericParam("lr",  lower = 0.01, upper = 0.5),
+    makeNumericParam("l2",  lower = 0.0  , upper =   30.0)
+  ),
+  has.simple.signature = FALSE,
+  global.opt.value = -1
+)
+
+ctrl = makeMBOControl(propose.points = 1)
+ctrl = setMBOControlTermination(ctrl, iters = 50L)
+ctrl = setMBOControlInfill(
+  ctrl,
+  crit = makeMBOInfillCritEI(),
+  opt = "focussearch",
+  opt.focussearch.points = 50L
+)
+
+lrn = makeMBOLearner(ctrl, obj.fun)
+design = generateDesign(20L, getParamSet(obj.fun), fun = lhs::maximinLHS)
+
+surr.km <-
+  makeLearner("regr.km", predict.type = "se", covtype = "matern3_2")
+
+run  <-  mbo(obj.fun, design = design, learner = surr.km, control = ctrl)
+
+
+saveRDS(run, "resultados/11_res5.RDS")
+
+```
+
+```{r}
+run <- readRDS("resultados/11_res5.RDS")
+print(run)
+```
+
+Tomemos todas las iteraciones para visualizarlas:
+
+```{r}
+
+iter <- as.data.frame(run$opt.path)
+iter
+
+```
+
+```{r}
+
+ggplot(iter, aes(x=lr,y=l2,color=-y)) +
+    scale_color_gradient(low = "blue", high = "green") +
+    geom_point()
+
+```
+
+```{r}
+plot(run)
+```
+
+¿Observaciones? Los escucho! 
+
+¡OJO! Estamos trabajando con muy pocas iteraciones en LGBM, el learning rate es muy sencible a ese valor. 
+
+Pasamos ahora a buscar el mejor juego de parámetros, pero para la función que nos interesa, que es la ganancia. Buscaremos los parámetros en `febrero2018`, validando contra `abril2018` y luego tomaremos 2 caminos. 
+
+* Ejecutaremos esos modelos para `junio2018`
+* Reentrenaremos en `abril2018` y testearemos en `junio2018`
+
+```{r}
+
+febrero2018 <- cargar_meses(201802, 0)
+junio2018 <- cargar_meses(201806, 0)
+
+```
+
+No usaremos para este caso `CV`.
+
+```{r}
+
+modelar_lgbm_train <- function(ds, target, param = list()) { 
+  
+  ds_lgm <- lgb.Dataset(data.matrix(ds), label = target)
+  p <- c(param, list(objective = "binary"))
+
+  modelo <- lgb.train(params=p,
+                ds_lgm,
+                25,
+                verbose = -1)
+  modelo
+}
+
+
+```
+
+Por un tema de comodidad y ahorro de tiempos, vamos en la función objetivo realizar más pasos de los que la misma debería, entrenando en más de un mes y almacenando valores en una variables `global`:
+
+```{r}
+
+resultados2 <- data.table()
+
+objetivo2 <- function(x) {
+  
+  m1 <- modelar_lgbm_train(febrero2018$datos, febrero2018$clases, 
+                           param = list(lambda_l2 = x$l2, learning_rate = x$lr) )  
+  m2 <- modelar_lgbm_train(abril2018$datos,abril2018$clases, 
+                           param = list(lambda_l2 = x$l2, learning_rate = x$lr) )  
+  p1 <- predict(m1, data.matrix(abril2018$datos),  type = "prob")
+  p2 <- predict(m1, data.matrix(junio2018$datos),  type = "prob")
+  p3 <- predict(m2, data.matrix(junio2018$datos),  type = "prob")
+  
+  g1 <- data.table(p=p1, c=abril2018$clases)
+  gan_m1_abril <- g1[p > 0.025, sum(ifelse(c == 1, 19500,-500))]
+  
+  g2 <- data.table(p=p2, c=junio2018$clases)
+  gan_m1_junio <- g2[p > 0.025, sum(ifelse(c == 1, 19500,-500))]
+  
+  g3 <- data.table(p=p3, c=junio2018$clases)
+  gan_m2_junio <- g3[p > 0.025, sum(ifelse(c == 1, 19500,-500))]
+
+  resultados2 <<- rbindlist(list(resultados2, data.table(lr = x$lr,
+                                         l2 = x$l2,
+                                         gan_m1_abril = gan_m1_abril,
+                                         gan_m1_junio = gan_m1_junio,
+                                         gan_m2_junio = gan_m2_junio )))
+  
+  - gan_m1_abril
+}
+
+objetivo2(list(l2=5, lr=0.3))
+objetivo2(list(l2=20, lr=0.1))
+
+resultados2
+
+```
+
+Y ahora buscamos los "mejores" parámetros:
+
+```{r, eval=FALSE}
+
+resultados2 <- data.table()
+
+set.seed(vsemillas[1])
+
+obj.fun = makeSingleObjectiveFunction(
+  name = "Experimento 1",
+  fn = objetivo2,
+  par.set = makeParamSet(
+    makeNumericParam("lr",  lower = 0.01, upper = 0.5),
+    makeNumericParam("l2",  lower = 0.0  , upper =   30.0)
+  ),
+  has.simple.signature = FALSE,
+  global.opt.value = -1
+)
+
+ctrl = makeMBOControl(propose.points = 1)
+ctrl = setMBOControlTermination(ctrl, iters = 50L)
+ctrl = setMBOControlInfill(
+  ctrl,
+  crit = makeMBOInfillCritEI(),
+  opt = "focussearch",
+  opt.focussearch.points = 50L
+)
+
+lrn = makeMBOLearner(ctrl, obj.fun)
+design = generateDesign(20L, getParamSet(obj.fun), fun = lhs::maximinLHS)
+
+surr.km <-
+  makeLearner("regr.km", predict.type = "se", covtype = "matern3_2")
+
+run  <-  mbo(obj.fun, design = design, learner = surr.km, control = ctrl)
+
+
+saveRDS(run, "resultados/11_res6.RDS")
+fwrite(resultados2, "resultados/11_res7.csv")
+
+```
+```{r}
+
+run <- readRDS("resultados/11_res6.RDS")
+
+resultados2 <- fread("resultados/11_res7.csv")
+
+```
+
+```{r}
+print(run)
+ggplot(resultados2, aes(x=lr,y=l2,color=gan_m1_abril)) +
+    scale_color_gradient(low = "blue", high = "green") +
+    geom_point()
+
+```
+
+Agregamos algunas columnas auxiliares que nos ayuden en nuestro análisis:
+
+```{r}
+# Elementos aleatorios
+resultados2$design <- 0
+resultados2$design[1:20] <- 1
+
+#Rankings
+resultados2$r_gan_m1_abril <- frank(-resultados2$gan_m1_abril)
+resultados2$r_gan_m1_junio <- frank(-resultados2$gan_m1_junio)
+resultados2$r_gan_m2_junio <- frank(-resultados2$gan_m2_junio)
+
+setcolorder(resultados2, c("design", "lr","l2","gan_m1_abril","r_gan_m1_abril","gan_m1_junio" ,"r_gan_m1_junio","gan_m2_junio","r_gan_m2_junio") )
+
+```
+
+Y guardamos en un archivos de Excel:
+
+```{r}
+library(openxlsx)
+
+write.xlsx(resultados2, "resultados/11_res7.xlsx")
+```
+
+Continuemos en Excel... y si, todos pecamos alguna vez! Exploremos `resultados/11_res7.xlsx`

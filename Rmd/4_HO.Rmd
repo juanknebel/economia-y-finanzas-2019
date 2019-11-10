@@ -1,0 +1,568 @@
+---
+title: "Hiper Optimización"
+author: "Alejandro Bolaños"
+date: "2019-09-09"
+version: 0.7
+output: 
+  html_document:
+    theme: spacelab
+    highlight: monochrome
+    df_print: paged
+#    toc: true
+#    toc_depth: 2
+
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Parámetros y su búsqueda
+
+> Si conocieras el tiempo tan bien como yo, no hablarías de perderlo --- Lewis Carroll
+
+```{r setup}
+
+rm( list=ls() )
+gc()
+
+```
+
+Continuamos con el nuestro camino a encontrar el mejor `Árbol` para nuestro modelo. Entre las cosas que hemos aprendido, se encuentra el dolor de la espera de una simple búsqueda de parámetros.
+
+Pensemos los componentes involucrados en los tiempos de ejecución. 
+
+* Nombremos todos los que considere importante.
+ 
+### Algoritmo
+
+Hagamos foco en dos en este momento. La implementación del algoritmo y el tamaño del data set. 
+
+* ¿Cómo considera que se podría mejor este aspecto si usted tuviera que reescribirlo?
+
+Bajemos un poco de detalle, entendamos las posibles lógicas de procesamiento de estos algoritmos. Simulemos el concepto de `cores` usando alumnos. Veamos, además, el script en dropbox `corte_univariado_optimo.r`.
+
+### Tamaño del dataset
+
+Entendiendo como funcionan los algoritmos que abren las ramas, podemos darnos cuenta que el tamaño del dataset tiene un peso importante en el tiempo de ejecución. Reducir los conjuntos de datos puede ser algo muy tentador. Juguemos un poco con esto. Sabemos que tenemos elementos de la clase `CONTINUA` como para tirar al techo, saquemos algunos aleatoriamente, y veamos los nuevos tiempos.
+
+Empezamos cargando los datos, y las función de ganancia. 
+
+```{r}
+
+library( "data.table" )
+
+febrero  <-  fread("../datasets/201902.txt", header=TRUE, sep="\t")
+abril <-  fread("../datasets/201904.txt", header=TRUE, sep="\t")
+
+# Transformamos nuestra clase ternaria en una clase binaria
+febrero$clase_binaria <- factor(ifelse(febrero$clase_ternaria == "BAJA+2", 1, 0))
+abril$clase_binaria <- factor(ifelse(abril$clase_ternaria == "BAJA+2", 1, 0))
+
+# MUY IMPORTANTE!!!! =)
+febrero$clase_ternaria <- NULL
+
+library( "ROCR" )
+
+vsemilla <- c(810757,482071,340979,446441,917513)
+
+fganancia = function(probabilidades, clase, punto_corte=0.025) {
+  return(sum(
+    (probabilidades >= punto_corte) * ifelse( clase == "1", 19500, -500 ))
+  )
+}
+
+```
+
+Y agregamos nuestra función para medir los modelos:
+
+```{r}
+# Un poco lenta... se anima a reescribirla para mejorar los tiempos de ejecución?
+
+fmetricas <- function(probs, clases, cutoff=0.025, proporcion=1, label="", type="", semilla=NA) {
+  
+  # AUC
+  binaria  <-  as.numeric(clases == "1")
+  roc_pred <-  ROCR::prediction(probs, binaria, label.ordering=c( 0, 1))
+  auc_t <-  ROCR::performance( roc_pred,"auc"); 
+  auc <- unlist(auc_t@y.values)
+  
+  # Ganancia
+  ganancia <- fganancia(probs, binaria) 
+  
+  # Ganancia normalizada, proyectamos la ganancia según el porcentaje de la muestra.
+  ganancia_normalizada <- ganancia / proporcion
+  
+  
+  # Calcular nuevo punto de corte
+  puntos_corte <- sort(unique(probs))
+  ganancia_all <- sapply(puntos_corte, fganancia, probabilidades=probs, clase=clases)
+  ds2 <- as.data.frame(cbind(puntos_corte, ganancia_all))
+  max_ganancia <- max(ds2$ganancia_all)
+  max_gan_normalizada <- max(ds2$ganancia_all)/proporcion
+  max_punto_corte <- ds2[ which(ds2$ganancia_all ==  max_ganancia), 1] 
+  
+  return(data.table(label, semilla, type, ganancia, ganancia_normalizada, auc, max_punto_corte, max_gan_normalizada))
+
+}
+
+```
+
+Ahora nos resta modificar la función de ajuste del árbol que vimos la clase pasada, agregando un parámetro más entrenar con una cantidad limitada de clase `CONTINUA|BAJA+1`:
+
+```{r}
+
+library(rpart)
+library(caret)
+
+fmodelo_rpart <- function (datos, # datos de entrada para modelar
+                            clase, # Variable clase
+                            prop, # Proporción de entrenamiento
+                            n = 0, # Cantidad de elementos de la no clase eventos para train 
+                            semillas, # Semillas a usar
+                            etiqueta = "", # referencia del modelo
+                            cp =  0.01, ms = 20, mb = 7, md = 30) { # parámetros con valores por default
+  
+  resultados <- data.table()
+  
+  for (s in semillas) {
+    set.seed(s)
+    train_casos <- createDataPartition( datos[, get(clase)], p = prop, list = FALSE)
+    train  <-  datos[  train_casos, ]
+    test   <-  datos[ -train_casos, ]
+    
+    
+    if (n > 0 )
+      muestra <- rbind(train[train[,get(clase)] == "1",], train[train[,get(clase)] != "1",][sample.int(n,n=nrow(train)),])
+    else
+      muestra <- train
+    
+    tam_ds <- dim(muestra)[1]
+
+    t0 <- Sys.time()
+    modelo <- rpart(formula(paste(clase, "~ .")), data = muestra, 
+                    xval=0, 
+                    cp=cp, 
+                    minsplit=ms, 
+                    minbucket=mb, 
+                    maxdepth = md )
+    t1 <- Sys.time()
+    
+    train_prediccion <- as.data.frame(predict(modelo, train , type = "prob"))
+    test_prediccion <- as.data.frame(predict(modelo, test , type = "prob"))
+    
+    tiempo <-  as.numeric(  t1 - t0, units = "secs")
+
+    # Sacamos entrenamiento     
+    resultados <- rbindlist(list(
+                    resultados,
+                        cbind (
+                          fmetricas(test_prediccion$`1`,
+                                test[,get(clase)],
+                                proporcion = (1-prop), type = "test",
+                                label=etiqueta, semilla=s),
+                          tiempo, cp, ms, mb, md, tam_ds),
+                        cbind (
+                          fmetricas(train_prediccion$`1`,
+                                train[,get(clase)],
+                                proporcion = prop, type = "train",
+                                label=etiqueta, semilla=s),
+                          tiempo, cp, ms, mb, md, tam_ds)
+    ))
+  }
+  
+  return(resultados)
+}
+```
+
+Ahora vamos a medir los tiempos para distintos tamaños de muestras:
+
+```{r}
+n_vector <- c(2000, 3000, 4000, 5000, 10000, 20000, 30000, 50000, 80000, 100000, 0) # Con 0, se entrena con todo
+
+# El for no es la forma más rápida de aplicar una función a un vector, pero cuando son pocas iteraciones
+# es más que válido.
+resultado <- data.table()
+
+for (i in n_vector) {
+  print(paste0("Ejecutando para n= ", i))
+  r <- fmodelo_rpart(febrero, "clase_binaria",
+                     prop = 0.7,
+                     n = i,
+                     semillas = vsemilla[1:1], # Solo una semilla vamos a usar 
+                     cp = 0.001)
+  resultado <- rbindlist(list(resultado, r))
+}
+```
+
+Great! En el transcurso de la ejecución pudimos percibir los tiempos. Pero pongamos los mismos en un gráfico.
+
+```{r}
+
+ggplot(resultado[type == "train"],aes(tam_ds,tiempo))  + geom_point()
+
+resultado[type == "train", ]
+```
+
+* ¿cómo entiende que afecta el N al tiempo de procesamiento?
+
+Tratemos de ajustar con una función lineal:
+
+```{r}
+
+ggplot(resultado[type == "train"],aes(tam_ds,tiempo))  + 
+  geom_point() +
+  geom_smooth(method="lm")
+
+```
+
+Mmmm, probemos con otro tipo de ajuste que no sea lineal:
+
+
+```{r}
+
+ggplot(resultado[type == "train"],aes(tam_ds,tiempo))  + 
+  geom_point() +
+  geom_smooth(method="lm", formula = y ~ poly(x, 2)) 
+
+```
+
+Interesante no? Igualmente, nuestras pruebas son muy básicas. Tomemos los resultados como un simple ejercicio.
+
+Lo que nos interesa saber, sin embargo, es si podemos usar estos árboles que tomaron menos de un segundo en entrenar como árboles para maximizar la ganancia. Como usamos un linda función que armamos, es simple poder responder esta pregunta, ya que el conjunto de `test` lo dejamos intacto.
+
+Empecemos mirando el `auc`. Recordamos que estamos trabajando con una sola semilla, por lo cual esto es simplemente orientativo.
+
+```{r}
+dcast(resultado, tam_ds ~ type , value.var = "auc", fun.aggregate = mean) 
+
+```
+
+Viendo los resultados, uno puede decidir que realmente es bueno entrenar con una muestra!... no? 
+
+Las métricas que estudiamos hasta ahora, ¿se ven afectadas por un re-balanceo de las clases? ¿le afecta a la `curva ROC`?
+
+¿Y la plata? ¿Cómo le afecta la ganancia este rebalanceo?
+
+```{r}
+dcast(resultado, tam_ds ~ type , value.var = "ganancia_normalizada", fun.aggregate = mean) 
+
+```
+
+DANGER, DANGER!!! ¿Qué sucedió? 
+
+Una pista...
+
+```{r}
+
+dcast(resultado, tam_ds ~ type , value.var = "max_punto_corte", fun.aggregate = mean) 
+
+```
+
+Modifiqué ligeramente la función de ganancia, ¿alguno se había dado cuenta?
+
+```{r}
+
+dcast(resultado, tam_ds ~ type , value.var = "max_gan_normalizada", fun.aggregate = mean) 
+
+```
+
+Estamos sobre territorios peligrosos. Sin una buena metodología de pruebas, sin un conocimiento claro sobre como afecta a las métricas un subsampleo (hoy llamo a la RAE para que incluya esta palabra...), y sin un `OOT` contrastando los resultados, el alumno promedio no debe ir por este camino. 
+
+Pero acaso, ¿quién se cree un alumno promedio? Dejemos a `Darwin` hacer su trabajo.
+
+Para el resto, tomaremos un n=5000 para trabajar en el ajuste de los árboles. ¿El motivo? Simplemente querer ejecutar todo en el menor tiempo posible y obtener conclusiones correctas de ejecuciones erróneas. Además para evitar tratar el tema del punto de corte, nos centraremos en la búsqueda del mejor árbol con respecto a la `auc`. 
+
+Quedará en manos del alumno reproducir los resultados con la métrica de ganancia. Aprenderá mucho.
+
+### En la busqueda de los parámetros adecuados. 
+
+* El subsampleo y el re-balanceo: ¿Van a afectar a los parámetros de los árboles? ¿Por qué?
+
+Empezaremos a buscar los mejores parámetros desde nos quedamos en la clase anterior.
+
+```{r}
+vcp  <-  c( 0, 0.0001, 0.0005,  0.001, 0.005, 0.01, 0.02, 0.05, 0.07, 0.1 ) 
+vmaxdepth  <-  c(  4, 5, 6, 7,8,9,10, 11, 12 ) 
+vminsplit  <-  c(  5, 10, 20, 50, 100, 200, 300, 500, 10000 ) 
+# vminbucket va a depender de minsplit y probaremos dos combinaciones de este.
+```
+
+```{r, eval=FALSE}
+resultados_cp <- data.table()
+
+for (v in vcp) {
+  r <- fmodelo_rpart(febrero, "clase_binaria",
+                     prop = 0.7, 
+                     semillas = vsemilla,
+                     n = 5000,
+                     etiqueta = "vcp",
+                     cp = v)
+  resultados_cp <- rbindlist(list(resultados_cp,r))
+}
+fwrite(resultados_cp, "resultados_cp.csv")
+```
+
+```{r}
+resultados_cp <- fread("resultados_cp.csv")
+```
+
+Disfrutamos que tarda un tiempo razonable, aunque más adelante mejoraremos los tiempos de la función `fmetricas`. Ahora visualizaremos el resultado sobre el conjunto de `Test`.
+
+```{r}
+
+res_cp_graph <- resultados_cp[type == "test", .(auc=mean(auc)), by=cp] 
+ggplot(res_cp_graph, aes(cp,auc)) + geom_line()
+
+```
+
+Hagamos el mismo análisis para otro parámetro:
+
+```{r, eval=FALSE}
+resultados_md <- data.table()
+
+for (v in vmaxdepth) {
+  r <- fmodelo_rpart(febrero, "clase_binaria",
+                     prop = 0.7, 
+                     semillas = vsemilla,
+                     n = 5000,
+                     etiqueta = "vmd",
+                     md = v)
+  resultados_md <- rbindlist(list(resultados_md,r))
+}
+
+fwrite(resultados_md, "resultados_md.csv")
+
+
+```
+```{r}
+resultados_md <- fread("resultados_md.csv")
+resultados_md[type == "test", .(auc=mean(auc)),by=md]
+res_md_graph <- resultados_md[type == "test", .(auc=mean(auc)), by=md] 
+ggplot(res_md_graph, aes(md,auc)) + geom_line()
+
+```
+
+
+Muy interesante. Pregunta.
+
+* Podemos determinar viendo la performance de cada uno por separado, ¿cúal es la mejor combinación de ambos?
+
+Si su respuesta es no, pasemos a probarlos de manera conjunta:
+
+```{r, eval=FALSE}
+resultados_cp_md <- data.table()
+
+for (cp in vcp) {
+  for (md in vmaxdepth) {
+    r <- fmodelo_rpart(febrero, "clase_binaria",
+                     prop = 0.7, 
+                     semillas = vsemilla,
+                     n = 5000,
+                     etiqueta = "vcp_vmd",
+                     md = md, cp = cp)
+    resultados_cp_md <- rbindlist(list(resultados_cp_md,r))
+  }
+}
+
+# Guardamos el resultado.
+fwrite(resultados_cp_md,"resultados_cp_md.csv")
+
+```
+
+Vemos que a pesar de reducir en mucho el entrenamiento, se toma varios minutos en probar todas las combinaciones posibles... y solo con dos variables!
+
+```{r}
+# Evita tener que ejecutar nuevamente el código anterior
+resultados_cp_md <- fread("resultados_cp_md.csv")
+```
+
+Gráfiquemos la performance bivariada:
+
+```{r}
+
+res_cp_md_graph <- resultados_cp_md[type == "test", .(auc=mean(auc)), by=.(md,cp)] 
+
+# A fin de mejorar un poco más el gráfico
+res_cp_md_graph$cp <- factor(res_cp_md_graph$cp)
+res_cp_md_graph$md <- factor(res_cp_md_graph$md)
+ggplot(res_cp_md_graph, aes(md,cp, color=auc, size=auc)) + geom_point()
+
+```
+
+Y buscamos el máximo valor encontrado en la búsqueda:
+
+```{r}
+res_cp_md_graph[auc == max(auc),]
+res_cp_md_graph
+```
+
+Sin mucho más preludio, buscamos la mejor combinación usando un Grid Search:
+
+```{r, eval=FALSE}
+
+resultados_grid <- data.table()
+
+for (cp in vcp) {
+  for (ms in vminsplit) {
+    for (mb in c(trunc(ms / 4), trunc(ms / 3))) {
+      for (md in vmaxdepth) {
+        r <- fmodelo_rpart(
+          febrero,
+          "clase_binaria",
+          prop = 0.7,
+          semillas = vsemilla,
+          n = 5000,
+          etiqueta = "grid",
+          md = md, cp = cp, ms = ms, mb = mb
+        )
+        resultados_grid <- rbindlist(list(resultados_grid, r))
+      }
+    }
+  }
+}
+
+# Guardamos el resultado.
+fwrite(resultados_grid,"resultados_grid.csv")
+
+```
+
+```{r}
+resultados_grid <- fread("resultados_grid.csv")
+```
+
+¿Cuál es el mejor modelo?
+
+```{r}
+res_grid <- resultados_grid[type == "test", .(auc=mean(auc)), by=.(md,cp, ms, mb)] 
+res_grid[auc == max(auc),]
+
+```
+
+* ¿Podemos usar esos parámetros para entrenar un modelo con todos los casos? Pruebe con varios casos, no sólo los mejores y vea si mantiene el orden.
+* ¿Cómo podríamos aplicar el modelo en `abril`?
+
+Veamos la cantidad de tiempo que nos tardó entrenar todos los casos, 
+
+```{r}
+
+# En minutos
+resultados_grid[type == "train", .(.N, sum(tiempo)/60)]
+
+```
+
+y hagamos la proyección de lo que nos hubiera tardado entrenar, si tomabamos todos los registros (considerando que cada árbol tarda con todos los registros 30 sec).
+
+```{r}
+
+cantidad_mb <- 2
+tiempo_seg <- 30 # Estimado a dedo...
+cantidad_semillas <- 5
+dias <- 60*60*24 # segundos*minutos*horas
+
+paste0("cantidad de días aproximados para ejecutar = ", cantidad_semillas*length(vcp)*length(vmaxdepth)*length(vminsplit)*cantidad_mb*tiempo_seg/dias)
+
+```
+
+Increible manera de perder la vida!!
+
+* ¿Se puede estimar el tiempo que va a tardar un árbol en función de sus parámetros? ¿Cómo lo haría?
+
+Probemos ahora tirando modelos por los aires... tomando al azar los parámetros:
+
+```{r, eval=FALSE}
+
+set.seed(17)
+cantidad <- 100
+r_vcp <- runif(cantidad, min = 0, max = 0.001)
+r_vmaxdepth <- as.integer(runif(cantidad, min=3, max=20))
+r_vminsplit <- as.integer(runif(cantidad, min=5, max=300)) 
+r_vminbucket <- runif(cantidad, min=0.1, max=0.9)
+ 
+resultados_random <- data.table()
+
+for (i in 1:cantidad) {
+  cp <- r_vcp[i]
+  md <- r_vmaxdepth[i]
+  ms <- r_vminsplit[i]
+  mb <- r_vminbucket[i]
+  r <- fmodelo_rpart(
+    febrero,
+    "clase_binaria",
+    prop = 0.7,
+    semillas = vsemilla,
+    n = 5000,
+    etiqueta = "random",
+    md = md, cp = cp, ms = ms, mb = as.integer(mb*ms)
+  )
+  resultados_random <- rbindlist(list(resultados_random, r))
+}
+
+fwrite(resultados_random,"resultados_random.csv")
+```
+
+```{r}
+resultados_random <- fread("resultados_random.csv")
+```
+
+Buscamos el óptimo:
+
+```{r}
+res_random <- resultados_random[type == "test", .(auc=mean(auc)), by=.(md,cp, ms, mb)] 
+res_random[auc == max(auc),]
+
+```
+
+Nada mal, si pensamos que fue completamente aleatoria y tardó mucho menos que el Grid Search.
+
+* Si estimó el tiempo que debería tardar un árbol en función de los parámetros. Valide con la ejecución del Random Search. ¿Cuál fue el error?
+
+Por último, pensamos. Si la gran promesa del Machine Learning es dejar sin trabajo a todos, incluidos los Data Scientist, ¿no habrá una forma más "inteligente" en la que la computadora busque los mejores parámetros? 
+
+Pues sí, veamos una opción, la `Optimización Bayesiana`:
+
+(Profundizaremos en las próximas clases sobre su funcionamiento y parametrización, sin embargo, desde hoy no solo puede, sino debe empezar a usarla cada vez que modele).
+
+```{r, eval=FALSE}
+
+library(rBayesianOptimization)
+
+objetivo <- function (cp, ms, mb, md) {
+  
+  r <- fmodelo_rpart(febrero, "clase_binaria",prop = 0.7, n=5000, semillas = vsemilla, etiqueta = "opt_bay", cp = cp, ms = ms, mb = mb*ms, md = md)      
+
+  list( Score = r[type=="test",mean(auc)], Pred = 0 )
+}
+
+OPT_Res <- BayesianOptimization( objetivo,
+           	bounds = list(      md =  c( 3L,   20L),
+                                mb =  c(0.1,    0.9),  
+                                ms =  c( 5L,  300L), 
+                                cp =  c(0.0,    0.001)
+			      ),
+	   init_points = 50,  n_iter = 50,
+	   acq = "ucb", kappa = 2.576, eps = 0.001,
+	   verbose = TRUE
+	   )
+
+fwrite( as.data.table(OPT_Res$History), "OPT_Res.csv" )
+```
+```{r}
+optbay <- fread( "OPT_Res.csv" )
+optbay
+```
+```{r}
+
+optbay[Value == max(Value), ]
+
+```
+
+
+
+¿Conclusiones?
+
+Tarea:
+
+* Pruebe la optimización bayesiana para el conjunto de datos entero.
+* Que otros parámetros se podrían sumar a la optimización.
+* Mida la mejora que produce la HP luego de haber entrenado con la muestra completa.
+

@@ -1,0 +1,526 @@
+---
+title: "Ensembles I - Ensamblando un Random Forest"
+author: "Alejandro Bolaños"
+date: "2019-09-16"
+version: 0.7
+output: 
+  html_document:
+    theme: spacelab
+    highlight: monochrome
+    df_print: paged
+#    toc: true
+#    toc_depth: 2
+
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+> Hay quienes pasan por el bosque y sólo ven leña para el fuego --- León Tolstoi
+
+El foco de nuestra clase de hoy es mostrarnos a nosotros mismos, que tenemos la capacidad de poder armar algoritmos funcionales útiles para la materia y para nuestro desarrollo profesional.
+
+A la vez, veremos la potencia (y belleza) de los ensembles. 
+
+Construiremos con nuestras manos un Random Forest.
+
+```{r}
+rm( list=ls() )
+gc()
+
+
+library( "data.table" )
+
+febrero  <-  fread("../datasets/201902.txt", header=TRUE, sep="\t")
+abril <-  fread("../datasets/201904.txt", header=TRUE, sep="\t")
+
+# Transformamos nuestra clase ternaria en una clase binaria
+febrero$clase_binaria <- factor(ifelse(febrero$clase_ternaria == "BAJA+2", 1, 0))
+abril$clase_binaria <- factor(ifelse(abril$clase_ternaria == "BAJA+2", 1, 0))
+
+febrero$clase_ternaria <- NULL
+
+# Sacamos el ID cliente y foto mes
+febrero[, c("numero_de_cliente","foto_mes"):=NULL]
+
+library( "ROCR" )
+
+vsemilla <- c(810757,482071,340979,446441,917513)
+
+```
+
+Empecemos:
+
+Lo primero que tenemos que ver es como vamos a tomar de forma aleatoria un conjunto de variables. A considerar:
+
+* Arme una función que se llame `fseleccionarvariables(ds, clase, n)` donde:
+** `n` se la cantidad de variables que necesitamos
+** `ds` el conjunto de datos
+** `clase` el nombre de la variable clase.
+
+* Debe devolver un vector con el nombre de las variables seleccionadas, sin la variable clase
+
+* Debe probar varias veces su función, antes de el siguiente paso.
+
+```{r}
+
+fseleccionarvariables <- function(ds, clase, n) {
+  
+  cm <- colnames(ds)
+  cm <- cm[cm != clase]
+  cm_select <- cm[sample(1:length(cm),n, replace=FALSE)]
+  cm_select
+  
+}
+
+```
+
+```{r}
+set.seed(vsemilla)
+fseleccionarvariables(febrero, "clase_binaria", 15)
+fseleccionarvariables(febrero, "clase_binaria", 15)
+fseleccionarvariables(febrero, "clase_binaria", 20)
+fseleccionarvariables(febrero, "clase_binaria", 25)
+```
+
+El siguiente paso en nuestro *LRF* (Lego Random Forest), es tomar una muestra estratificada para el sampling del `bagging`.
+
+* Arme una función `fbagging(ds, prop_train, prop_bagging, clase,  n)` donde:
+** `n` cantidad de muestras que necesitamos
+** `ds` el conjunto de datos
+** `prop_train` proporción que queremos para train
+** `prop_bagging` proporción que queremos para bagging
+** `clase` el nombre de la variable clase.
+
+* Debe devolver una matriz donde cada columna es un sampling y cada registro tiene que tener 1, 2 ó 3. 1: Train, 2:Test, 3: OOB.
+
+* Prueba repetidas veces la función y sus resultados.
+
+```{r}
+library(caret)
+
+fbagging <-
+  function(ds,
+           prop_train,
+           prop_bagging,
+           clase,
+           n = 1,
+           prefix = "s_"
+           ) {
+    
+    respuesta <- matrix(0, ncol = n, nrow = dim(ds)[1])
+    colnames(respuesta) <- paste0(prefix, 1:n)
+    
+    train_base <-
+      createDataPartition(ds[, get(clase)], p = prop_train, list = FALSE)
+    test_base   <-  (1:dim(ds)[1])[-train_base]
+
+      
+      respuesta[train_base,] <- 1
+      respuesta[test_base,] <- 3
+    
+    for (i in 1:n) {
+      oob <-
+        createDataPartition(ds[train_base, get(clase)],
+                            p = 1 - prop_bagging, list = FALSE)
+      
+      respuesta[train_base[oob], i] <- 2
+      
+    }
+    respuesta
+    
+  }
+
+```
+
+Y probamos:
+
+```{r}
+test1 <- fbagging(febrero, 0.7, 0.7, "clase_binaria")
+
+table(test1)
+```
+
+Miramos las proporciones:
+
+```{r}
+
+table(test1) / dim(febrero)[1]
+
+```
+
+Revisamos que siempre `test` sea igual y tenga los mismos registros:
+
+```{r}
+test2 <- fbagging(febrero, 0.7, 0.7, "clase_binaria", n = 3)
+
+test2 <- as.data.table(test2)
+
+test2[s_1 == 3, .N]
+test2[s_1 == 3 & s_2 == 3, .N]
+test2[s_1 == 3 & s_2 == 3 & s_3 == 1, .N]
+test2[s_1 == 3 & s_2 == 3 & s_3 == 3, .N]
+
+```
+
+Perfecto.
+
+Pasamos a probar un árbol que vamos a usar dentro del bagging. Pero antes vamos a cargar nuestra `fmetricas` hecha solo para este caso, analicemos los cambios:
+
+```{r}
+
+fmetricas <- function(probabilidades, clases, label="") {
+  
+  # AUC
+  binaria  <-  as.numeric(clases == "1")
+  roc_pred <-  ROCR::prediction(probabilidades, binaria, label.ordering=c( 0, 1))
+  auc_t <-  ROCR::performance( roc_pred,"auc"); 
+  auc <- unlist(auc_t@y.values)
+  
+  
+  data <- cbind(probabilidades,binaria)
+  data <- as.data.table(data)
+  data[, c("v", "c1", "c2") := list(
+    ifelse(binaria == 1, 19500,-500),
+    ifelse(binaria == 1, 1, 0),
+    ifelse(binaria == 1, 0, 1))]
+  data2 <- data[, .(gan = sum(v), 
+              cant1 = sum(c1), 
+              cant2=sum(c2)), by=probabilidades]
+  setorder(data2,-probabilidades)
+  data2[,c("gan2","quedan","sevan") := list(cumsum(gan),cumsum(cant2),cumsum(cant1))]
+  
+  ganancia <- data2[probabilidades >= 0.025, ][probabilidades == min(probabilidades), gan2]
+  
+  return(data.table(ganancia, auc, label))
+}
+
+```
+
+Y finalmente probamos un árbol de los que luego, mucho van a construir nuestro bosque:
+
+* Busque a mano cuales son los parámetros necesarios para que abran los árboles. Ejecute varias veces hasta estar seguro que siempre van a haber árboles con los parámetros que eligió.
+
+```{r}
+library(rpart)
+
+# Complete: N
+set.seed(vsemilla[1])
+var1 <- fseleccionarvariables(febrero, "clase_binaria", 20)
+for1 <- formula(paste("clase_binaria", "~", paste0(var1, collapse = " + ")))
+sb1 <- fbagging(febrero, 0.7, 0.7, "clase_binaria")
+
+t0 <- Sys.time()
+modelo <- rpart(for1, data = febrero[sb1[,1] == 1, ], 
+                # Complete: ms mb md cp
+                minsplit=10, 
+                minbucket=5, 
+                maxdepth = 20,
+                cp = 0,
+                xval=0
+                )
+
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+
+modelo
+```
+
+Vemos que nuestros árboles al ser más chicos, tardan mucho menos en entrenar.
+
+```{r}
+tiempo
+```
+
+Medimos la calidad del modelo:
+
+```{r}
+
+train_prediccion <- as.data.frame(predict(modelo, febrero[sb1[,1] == 1,] , type = "prob"))
+test_prediccion <- as.data.frame(predict(modelo, febrero[sb1[,1] == 3,] , type = "prob"))
+oob_prediccion <- as.data.frame(predict(modelo, febrero[sb1[,1] == 2,] , type = "prob"))
+    
+f1 <- fmetricas(train_prediccion$`1`, febrero[sb1[,1] == 1,"clase_binaria"], "train")
+f2 <- fmetricas(test_prediccion$`1`, febrero[sb1[,1] == 3,"clase_binaria"], "test")
+f3 <- fmetricas(oob_prediccion$`1`, febrero[sb1[,1] == 2,"clase_binaria"], "oob")
+
+rbindlist(list(f1,f2,f3))
+
+```
+
+Sabemos que vamos a tener que ejecutar esto multiples veces. Tenemos que resolver como acumulamos las probabilidades para despues promediarlas debidamente. Esto podemos resolverlo con una matriz de probabilidades:
+
+```{r}
+
+cantidad_iteraciones <- 1
+matriz_prob <- matrix(0, ncol = cantidad_iteraciones, nrow = dim(febrero)[1])
+  
+```
+
+Y la completamos de forma correcta:
+
+```{r}
+
+matriz_prob[sb1[,1] == 1] <- train_prediccion$`1`
+matriz_prob[sb1[,1] == 3] <- test_prediccion$`1`
+matriz_prob[sb1[,1] == 2] <- oob_prediccion$`1`
+
+```
+
+Y probamos que esté todo bien:
+
+```{r}
+
+f1 <- fmetricas(matriz_prob[sb1[,1] == 1], febrero[sb1[,1] == 1,"clase_binaria"], "train")
+f2 <- fmetricas(matriz_prob[sb1[,1] == 3], febrero[sb1[,1] == 3,"clase_binaria"], "test")
+f3 <- fmetricas(matriz_prob[sb1[,1] == 2], febrero[sb1[,1] == 2,"clase_binaria"], "oob")
+
+rbindlist(list(f1,f2,f3))
+
+```
+
+Ahora probamos de ejecutar todo lo anterior para un número controlado de árboles:
+
+```{r}
+
+cantidad_iteraciones <- 5
+matriz_prob <-
+  matrix(0, ncol = cantidad_iteraciones, nrow = dim(febrero)[1])
+colnames(matriz_prob)<-paste0("p_",1:cantidad_iteraciones)
+
+sb2 <-
+  fbagging(febrero, 0.7, 0.7, "clase_binaria", n = cantidad_iteraciones)
+
+t0 <- Sys.time()
+for (i in 1:cantidad_iteraciones) {
+  var2 <- fseleccionarvariables(febrero, "clase_binaria", 20)
+  for2 <-
+    formula(paste("clase_binaria", "~", paste0(var2, collapse = " + ")))
+  
+  modelo2 <- rpart(
+    for2,
+    data = febrero[sb2[, i] == 1,],
+    # Complete: ms mb md cp
+    minsplit = 10,
+    minbucket = 5,
+    maxdepth = 20,
+    cp = 0,
+    xval = 0
+  )
+  
+  train_prediccion <-
+    as.data.frame(predict(modelo2, febrero[sb2[, 1] == 1, ] , type = "prob"))
+  test_prediccion <-
+    as.data.frame(predict(modelo2, febrero[sb2[, 1] == 3, ] , type = "prob"))
+  oob_prediccion <-
+    as.data.frame(predict(modelo2, febrero[sb2[, 1] == 2, ] , type = "prob"))
+  
+  matriz_prob[sb2[, i] == 1, i] <- train_prediccion$`1`
+  matriz_prob[sb2[, i] == 3, i] <- test_prediccion$`1`
+  matriz_prob[sb2[, i] == 2, i] <- oob_prediccion$`1`
+  
+}
+t1 <- Sys.time()
+tiempo <-  as.numeric(t1 - t0, units = "secs")
+tiempo
+```
+
+Ahora vamos a realizar el ensemble. Para esto simplemente vamos a promediar la probabilidad. Tenemos que mirar los siguientes puntos. 
+
+* Vamos a combinar de la siguiente forma: 1, (1,2), (1,2,3), etc... para ver la mejora.
+* En el `train` y en el `oob` no siempre van a estar los mismos elementos.
+
+Por el simple motivo de no hacer muy complejo el código, sólo veamos los ensembles sobre `test`. Dejando al alumno la misma tarea para el resto.
+
+```{r}
+
+matriz_ensemble_test <-
+  matrix(0, ncol = cantidad_iteraciones - 1, nrow = dim(febrero)[1])
+colnames(matriz_ensemble_test)<-paste0("e_",2:cantidad_iteraciones)
+
+matriz_prob_test <- matriz_prob
+
+matriz_prob_test[sb2 == 1 | sb2 == 2] <- NA
+
+for(i in 2:cantidad_iteraciones) {
+    matriz_ensemble_test[,i - 1] <-rowMeans(matriz_prob_test[,1:i], na.rm = TRUE)
+}
+```
+
+Veamos el resultado:
+
+```{r}
+head(matriz_ensemble_test)
+
+```
+
+Con una lógica similar, y con cuidado de los NaN, se puede contruir las tablas para el `train` y el `oob`.
+
+Ahora sacamos las métricas de cada ensemble.
+
+
+```{r}
+resultados <- data.table()
+for (i in 1:(cantidad_iteraciones-1)) {
+
+  r <- cbind(fmetricas(matriz_ensemble_test[sb2[,1] == 3, i],
+                 febrero[sb2[,1] == 3, clase_binaria],
+                 label=paste("test e", i + 1)),i)
+  
+  resultados <- rbindlist(list(resultados,r))
+  
+}
+resultados
+
+```
+
+Vaya, me muestra que va mejorando! Seamos más ambiciosos, subamos el `n`, pero guardemos los modelos, para aplicarlos sobre `abril`.
+
+```{r}
+
+
+cantidad_iteraciones <- 50
+matriz_prob <-
+  matrix(0, ncol = cantidad_iteraciones, nrow = dim(febrero)[1])
+colnames(matriz_prob)<-paste0("p_",1:cantidad_iteraciones)
+
+sb3 <-
+  fbagging(febrero, 0.7, 0.7, "clase_binaria", n = cantidad_iteraciones)
+
+modelos <- list()
+
+t0 <- Sys.time()
+for (i in 1:cantidad_iteraciones) {
+  var3 <- fseleccionarvariables(febrero, "clase_binaria", 20)
+  for3 <-
+    formula(paste("clase_binaria", "~", paste0(var3, collapse = " + ")))
+  
+  modelo3 <- rpart(
+    for3,
+    data = febrero[sb3[, i] == 1,],
+    minsplit = 10,
+    minbucket = 5,
+    maxdepth = 20,
+    cp = 0,
+    xval = 0
+  )
+  
+  modelos[[i]] <- modelo3
+  
+  test_prediccion <-
+    as.data.frame(predict(modelo3, febrero[sb3[, i] == 3, ] , type = "prob"))
+
+  matriz_prob[sb3[, i] == 3, i] <- test_prediccion$`1`
+
+}
+t1 <- Sys.time()
+tiempo <-  as.numeric(t1 - t0, units = "secs")
+tiempo
+
+```
+
+Medimos su evolución:
+
+```{r}
+
+matriz_ensemble_test <-
+  matrix(0, ncol = cantidad_iteraciones - 1, nrow = dim(febrero)[1])
+colnames(matriz_ensemble_test)<-paste0("e_",2:cantidad_iteraciones)
+
+matriz_prob_test <- matriz_prob
+
+matriz_prob_test[sb3 == 1 | sb3 == 2] <- NA
+
+for(i in 2:cantidad_iteraciones) {
+    matriz_ensemble_test[,i - 1] <-rowMeans(matriz_prob_test[,1:i], na.rm = TRUE)
+}
+
+resultados <- data.table()
+for (i in 1:(cantidad_iteraciones-1)) {
+
+  r <- cbind(fmetricas(matriz_ensemble_test[sb3[,1] == 3, i],
+                 febrero[sb3[,1] == 3, clase_binaria],
+                 label=paste("test e", i + 1)),i)
+  
+  resultados <- rbindlist(list(resultados,r))
+  
+}
+resultados
+
+```
+
+Buscamos la ganancia máxima:
+
+```{r}
+resultados[ganancia==max(ganancia)]
+```
+
+Y la ponderamos:
+
+```{r}
+resultados[ganancia==max(ganancia), ganancia/0.3]
+```
+
+Y lo graficamos para que se vea lindo:
+
+```{r}
+library(ggplot2)
+
+ggplot(resultados, aes(i,auc)) + geom_line()
+```
+```{r}
+
+ggplot(resultados, aes(i,ganancia)) + geom_line()
+
+```
+
+Reflexión. Con un minuto de ejecución. Un solo minuto de ejecución conseguimos una auc superior a 0.92 y una ganancia normalizada de `8958333`, algo más de 1mm más que la mejor lograda con un solo árbol, después de dejarlo un monton de tiempo buscando hiperparámetros!!!.
+
+Aplicamos el modelo a `abril`:
+
+```{r}
+
+matriz_abril <- 
+  matrix(0, ncol = cantidad_iteraciones, nrow = dim(abril)[1])
+
+colnames(matriz_abril)<-paste0("p_",1:cantidad_iteraciones)
+
+for (i in 1:cantidad_iteraciones) {
+  abril_prediccion <- as.data.frame(predict(modelos[[i]], abril, type = "prob"))
+  matriz_abril[,i] <- abril_prediccion$`1`
+}
+
+
+matriz_ensemble_abril <-
+  matrix(0, ncol = cantidad_iteraciones - 1, nrow = dim(abril)[1])
+colnames(matriz_ensemble_abril)<-paste0("e_",2:cantidad_iteraciones)
+
+for(i in 2:cantidad_iteraciones) {
+    matriz_ensemble_abril[,i - 1] <-rowMeans(matriz_abril[,1:i], na.rm = TRUE)
+}
+
+resultados_abril <- data.table()
+for (i in 1:(cantidad_iteraciones-1)) {
+
+  r <- cbind(fmetricas(matriz_ensemble_abril[, i],
+                 abril[, clase_binaria],
+                 label=paste("abril e", i + 1)),i)
+  
+  resultados_abril <- rbindlist(list(resultados_abril,r))
+  
+}
+resultados_abril
+
+```
+
+Y nuevamente graficamos:
+
+```{r}
+ggplot(resultados_abril, aes(i,auc)) + geom_line()
+ggplot(resultados_abril, aes(i,ganancia)) + geom_line()
+```
+
+
+Tarea:
+
+Queda tanto, tanto por mejorar, que dejo al alumno que se aventure por donde su instinto lo guie. 

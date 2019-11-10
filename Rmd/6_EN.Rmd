@@ -1,0 +1,684 @@
+---
+title: "Ensembles II - el despertar de las librerías"
+author: "Alejandro Bolaños"
+date: "2019-09-23"
+version: 0.7
+output: 
+  html_document:
+    theme: spacelab
+    highlight: monochrome
+    df_print: paged
+#    toc: true
+#    toc_depth: 2
+
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+> ...el mundo infinitamente benévolo del soma. --- Aldous Huxley
+
+Continuaremos con el fascinante mundo de los ensembles. A diferencia de la clase pasada, donde armamos con nuestras manos un `Random Forest`, hoy usaremos implementaciones más robustas y potentes. A mi gusto, el abuso de las librerías es tan malo como las drogas. 
+
+Los algoritmos que veremos hoy son campeones. Muchos detalles de los mismos los veremos en las siguientes clases, está tan solo es un introducción.
+
+Empecemos un revisión del script `FeatureEngineering\fecha_relativas.r`
+
+
+```{r}
+rm( list=ls() )
+gc()
+
+
+library( "data.table" )
+
+febrero  <-  fread("../datasets/dias/201902_dias.txt", header=TRUE, sep="\t")
+abril <-  fread("../datasets/dias/201904_dias.txt", header=TRUE, sep="\t")
+
+# Transformamos nuestra clase ternaria en una clase binaria
+febrero$clase_binaria <- factor(ifelse(febrero$clase_ternaria == "BAJA+2", 1, 0))
+abril$clase_binaria <- factor(ifelse(abril$clase_ternaria == "BAJA+2", 1, 0))
+
+febrero$clase_ternaria <- NULL
+
+# Sacamos el ID cliente y foto mes
+febrero[, c("numero_de_cliente","foto_mes"):=NULL]
+abril[, c("numero_de_cliente","foto_mes"):=NULL]
+
+library( "ROCR" )
+
+vsemilla <- c(810757,482071,340979,446441,917513)
+
+```
+
+Empecemos tomando un baseline de un árbol, con los parámetros por defecto, y con los parámetros que Gustavo subió al `Dropbox`
+
+```{r}
+library(rpart)
+
+t0 <- Sys.time()
+modelo_rpart1 <- rpart(clase_binaria ~ ., data = febrero, 
+                cp = 0.001,
+                xval=0
+                )
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo de ajuste modelo simple:" , tiempo, collapse = " "))
+
+t0 <- Sys.time()
+modelo_rpart2 <- rpart(clase_binaria ~ ., data = febrero, 
+                 minsplit=20, 
+                 minbucket=6, 
+                 maxdepth = 16,
+                 cp = 0,
+                 xval=0
+                )
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo de ajuste modelo hiper parametrizado:" , tiempo, collapse = " "))
+```
+
+Agregamos nuestra función de medición:
+
+```{r}
+
+fmetricas <- function(probabilidades, 
+                      clases, 
+                      label="",
+                      punto_corte=0.025, 
+                      proporcion=1) {
+
+  # AUC
+  binaria  <-  as.numeric(clases == "1")
+  roc_pred <-  ROCR::prediction(probabilidades, binaria, label.ordering=c( 0, 1))
+  auc_t <-  ROCR::performance( roc_pred,"auc"); 
+  auc <- unlist(auc_t@y.values)
+  
+  
+  data <- cbind(probabilidades,binaria)
+  data <- as.data.table(data)
+  data[, c("v", "c1", "c2") := list(
+    ifelse(binaria == 1, 19500,-500),
+    ifelse(binaria == 1, 1, 0),
+    ifelse(binaria == 1, 0, 1))]
+  data2 <- data[, .(gan = sum(v), 
+              cant1 = sum(c1), 
+              cant2=sum(c2)), by=probabilidades]
+  setorder(data2,-probabilidades)
+  data2[,c("gan2","quedan","sevan") := list(cumsum(gan),cumsum(cant2),cumsum(cant1))]
+  
+  ganancia <- data2[probabilidades >= 0.025, ][probabilidades == min(probabilidades), gan2]
+  ganancia_normalizada <- ganancia / proporcion
+  
+  max_punto_corte <- data2[ gan2 == ganancia, ][,  min(probabilidades)]
+  
+  return(data.table(label, ganancia, ganancia_normalizada, auc, max_punto_corte))
+}
+
+```
+
+Y medimos la calidad de los modelos sobre `ABRIL`
+
+```{r}
+
+resultados <- data.table()
+
+abril_prediccion_1 <- as.data.frame(predict(modelo_rpart1, abril , type = "prob"))
+abril_prediccion_2 <- as.data.frame(predict(modelo_rpart2, abril , type = "prob"))
+ 
+    
+f1 <- fmetricas(abril_prediccion_1$`1`, abril$clase_binaria, label="arbol simple")
+f2 <- fmetricas(abril_prediccion_2$`1`, abril$clase_binaria, label="arbol hp")
+
+resultados <- rbindlist(list(resultados,f1,f2))
+
+resultados
+
+```
+
+Ahora pasaremos a trabajar con la librería `ranger` que nos armará ensembles automáticos de árboles, primero veamos un ejemplo suelto:
+
+```{r}
+library(caret)
+library(ranger)
+library(randomForest)
+
+set.seed(vsemilla[1])
+
+train_casos <- createDataPartition(febrero[,get("clase_binaria")], p = 0.7, list = FALSE)
+train  <-  febrero[  train_casos, ]
+test   <-  febrero[ -train_casos, ]
+
+##
+## ranger no soporta, como lo hacen otras librerías, los missing values
+## 
+train <-  na.roughfix( train )
+test <-  na.roughfix( test )
+
+# Recomendación: 
+variables <- round(sqrt(dim(febrero)[2]-1))
+
+t0 <- Sys.time()
+modelo_rf_1 <- ranger( clase_binaria ~ ., data = train, 
+                  probability=TRUE, 
+                  num.trees=100,
+                  min.node.size=10, 
+                  # numero de variables -> RECORDAR CUANDO UNO AGREGA MAS VARIABLES
+                  mtry=variables,
+                  splitrule="gini",
+                  sample.fraction = 0.66,
+                  importance = "impurity",
+                  verbose=TRUE)	
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo de ajuste Random Forest: " , tiempo, collapse = " "))
+
+```
+
+Revisemos primero la performance del modelo en `train` y `test`:
+
+```{r}
+
+pred_train <- predict(modelo_rf_1, train)
+pred_test <- predict(modelo_rf_1, test)
+
+f1 <- fmetricas(pred_train$predictions[,"1"], train[,"clase_binaria"], label = "train", proporcion = .7)
+f2 <- fmetricas(pred_test$predictions[,"1"], test[,"clase_binaria"], label = "test", proporcion = 0.3)
+
+rbindlist(list(f1,f2))
+
+```
+
+Wow! ¿Qué paso en `train`?
+
+Veamos rápidamente un parámetro que no apareció antes y juguemos con él: (Recomiendo abrir un visor de recursos)
+
+```{r}
+
+for (i in c(1,2,4)) {
+  
+  t0 <- Sys.time()
+  modelo_rf_2 <- ranger( clase_binaria ~ ., data = train, 
+                  probability=TRUE, 
+  
+                  num.trees=50,
+                  
+                  min.node.size=10, 
+                  mtry=variables,
+                  # GINI - extratrees
+                  splitrule="gini",
+                  importance = "impurity",
+                  
+                  ###
+                  num.threads = i,
+                  ###
+                  
+                  sample.fraction = 0.66,
+                  verbose=TRUE)	
+  t1 <- Sys.time()
+  tiempo <-  as.numeric(  t1 - t0, units = "secs")
+  print(paste0("Tiempo de ajuste Random Forest con num.threads  " , i, " es: ", tiempo, collapse = " "))
+  
+}
+```
+
+¿Qué sucedió con el tiempo? ¿Qué significa ese párametro?
+
+Veamos a continuación algo muy útil de los `RF. La importancia de variables:
+
+```{r}
+
+importancia <- as.data.table(modelo_rf_1$variable.importance,keep.rownames = TRUE)
+colnames(importancia) <- c("variable", "importancia")
+setorder(importancia, -importancia)
+importancia
+
+```
+
+* ¿Qué significa que una variable sea más importante que otra?
+* ¿Qué significa que una variable tenga 0 importancia? Con el RF es suficiente como para descartarlas?
+* ¿Qué una variable tenga algo de importancia es suficiente como para entender que da valor?
+
+Hagamos un experimento:
+
+```{r}
+set.seed(vsemilla[2])
+train$canario <- runif(nrow(train))
+
+modelo_rf_3 <- ranger( clase_binaria ~ ., data = train, 
+                  probability=TRUE, 
+                  num.trees=150,
+                  min.node.size=10, 
+                  mtry=variables,
+                  splitrule="gini",
+                  importance = "impurity",
+                  verbose=TRUE)	
+```
+
+```{r}
+
+importancia <- as.data.table(modelo_rf_3$variable.importance,keep.rownames = TRUE)
+colnames(importancia) <- c("variable", "importancia")
+setorder(importancia, -importancia)
+importancia
+
+# importancia[variable == "canario"]
+
+```
+
+What?
+
+* ¿Qué sucedió?
+* ¿Qué hago?
+* https://www.youtube.com/watch?v=86URGgqONvA ???
+
+Con la detección de este problema, nos sentamos a buscar una correcta parametrización de un `RF` y buscar sus hiper parámetros con una búsqueda bayesiana.
+
+Miremos los parámetros que cuenta:
+
+
+```{r}
+
+help("ranger")
+
+```
+
+Seleccione los parámetros de la búsqueda y el rango de los mismos. Volveremos a este punto más adelante. No se olvide de incluir en la medición de cada parámetro sus 5 semillas.
+
+```{r}
+
+# Simplificada para devolver solamente la ganancia sobre test
+fmodelo_ranger <- function (datos, clase, params, seeds, num.trees=50) {
+  
+  resultados <- c()
+  for (s in seeds) {
+    set.seed(s)
+    train_casos <- createDataPartition( datos[, get(clase)], p = 0.7, list = FALSE)
+    train  <-  datos[  train_casos, ]
+    test   <-  datos[ -train_casos, ]
+
+    train <-  na.roughfix( train )
+    test <-  na.roughfix( test )
+
+    modelo <- ranger (formula(paste(clase, "~ .")),
+                                data = train,
+                                probability=TRUE,
+                                num.trees=num.trees,
+                                min.node.size=params[["min.node.size"]],
+                                mtry=params[["mtry"]])
+
+    pred_test <- predict(modelo, test)
+
+
+    r <- fmetricas(pred_test$predictions[,"1"], test[, get(clase)], proporcion = 0.3)[,ganancia_normalizada]
+    resultados <- c(resultados, r)
+    
+  }
+  return(mean(resultados))
+}
+
+# fmodelo_ranger(febrero, "clase_binaria", params=list(min.node.size=10,                                                      mtry=20), c(17,23))
+
+```
+
+```{r, eval=FALSE}
+
+library(rBayesianOptimization)
+
+objetivo <- function (min.node.size ,mtry) {
+  
+   
+  r <- fmodelo_ranger(febrero, "clase_binaria", 
+                      params=list(min.node.size=min.node.size,
+                                  mtry=mtry), 
+                      vsemilla)
+
+  list( Score = r, Pred = 0 )
+}
+
+OPT_RF <- BayesianOptimization( objetivo,
+           	bounds = list(      min.node.size =  c( 10L,   20L),
+                                mtry =  c(2,    20)
+			      ),
+	   init_points = 50,  n_iter = 50,
+	   acq = "ucb", kappa = 2.576, eps = 0.001,
+	   verbose = TRUE
+	   )
+
+fwrite( as.data.table(OPT_RF$History), "OPT_RF.csv" )
+
+```
+
+
+## Gradient Boosting.
+
+Continuamos con una maravilla de los algoritmos de clasificación. Veamos su funcionamiento rápidamente:
+
+[Tutorial](Introduction_to_Boosted_Trees.pdf)
+
+[Parámetros](https://xgboost.readthedocs.io/en/latest/parameter.html)
+
+Antes de empezar a usarlo, tenemos que serializar los datos:
+
+```{r}
+
+library(xgboost)
+
+clases_febrero <- as.numeric(febrero$clase_binaria) - 1
+febrero$clase_binaria <- NULL
+
+dtrain   <- xgb.DMatrix( data = data.matrix(febrero),  label = clases_febrero, missing=NA )
+
+```
+
+```{r}
+set.seed(vsemilla[1])
+t0 <- Sys.time()
+
+modelo1 = xgb.cv( 
+				data = dtrain,  
+				missing = NA,
+				stratified = TRUE,       
+				
+				nround= 20,
+				nfold = 5,
+				
+				watchlist = list(metric='auc'),
+				early_stopping_rounds = 50,
+				
+				
+				# feval = ganancia,
+				eval_metric= "auc",
+				
+				maximize =TRUE,
+				
+				# subsample ratio of the training instance. Setting it to 0.5 means that xgboost randomly collected half of the data instances to grow trees and this will prevent overfitting. It makes computation shorter (because less data to analyse). It is advised to use this parameter with eta and increase nround. Default: 1
+				
+				subsample = 1, 
+				
+				# subsample ratio of columns when constructing each tree
+	 			colsample_bytree = 1, 
+				
+				# eta control the learning rate: scale the contribution of each tree by a factor of 0 < eta < 1 when it is added to the current approximation. Used to prevent overfitting by making the boosting process more conservative. Lower value for eta implies larger value for nrounds: low eta value means model more robust to overfitting but slower to compute.
+		    eta = 0.3,
+				
+				# min_child_weight minimum sum of instance weight (hessian) needed in a child. If the tree partition step results in a leaf node with the sum of instance weight less than min_child_weight, then the building process will give up further partitioning. In linear regression mode, this simply corresponds to minimum number of instances needed to be in each node. The larger, the more conservative the algorithm will be.
+				
+ 				min_child_weight = 1, 
+				
+				# max_depth maximum depth of a tree.
+	 			max_depth = 6,
+				
+				# L1 regularization
+		 		alpha = 0, 
+				# L2 regularization
+				lambda = 0, 
+				
+				#gamma minimum loss reduction required to make a further partition on a leaf node of the tree. the larger, the more conservative the algorithm will be.
+				
+				# gamma = 10,
+				
+				# base_score [default=0.5] : the initial prediction score of all instances, global bias
+
+				# objective specify the learning task and the corresponding learning objective, users can pass a self-defined function to it. The default objective options are below ... 
+				
+ 				objective="binary:logistic",
+				
+				verbose = 2
+			)
+
+t1 <- Sys.time()
+
+print(paste0("El tiempo que tardó en ajustar XGB es:", as.numeric(  t1 - t0, units = "secs"), collapse = " "))
+
+```
+
+
+Veamos el modelo resultante
+
+```{r}
+modelo1$best_iteration
+modelo1$best_ntreelimit
+```
+
+Probemos sumando dos parámetros más:
+
+```{r}
+
+set.seed(vsemilla[1])
+t0 <- Sys.time()
+
+modelo1 = xgb.cv( 
+				data = dtrain,  
+				missing = NA,
+				stratified = TRUE,       
+				nround= 20,
+				nfold = 5,
+				watchlist = list(metric='auc'),
+				early_stopping_rounds = 50,
+				eval_metric= "auc",
+				maximize =TRUE,
+				subsample = 1, 
+	 			colsample_bytree = 1, 
+		    eta = 0.3,
+ 				min_child_weight = 1, 
+	 			max_depth = 6,
+		 		alpha = 0, 
+				lambda = 0, 
+ 				objective="binary:logistic",
+				####
+				tree_method = "hist",
+				grow_policy="lossguide",
+				####
+				verbose = 2
+			)
+
+t1 <- Sys.time()
+
+print(paste0("El tiempo que tardó en ajustar XGB es:", as.numeric(  t1 - t0, units = "secs"), collapse = " "))
+
+```
+
+* ¿Por qué se dio ese diferencia tan grande de tiempos?
+
+Vemos como obtener el modelo final:
+
+```{r}
+
+modelo_xgb_1 = xgb.train( 
+				data = dtrain,  
+				missing = NA,
+				nround= 20,
+    	  eval_metric= "auc", 
+				maximize =TRUE,
+				objective="binary:logistic",
+			  verbose = 2
+			)
+```
+
+```{r}
+
+clases_abril <- as.numeric(abril$clase_binaria) - 1
+
+abril$clase_ternaria <- NULL
+abril$clase_binaria <- NULL
+
+abril_pred <- predict(modelo_xgb_1, data.matrix(abril),  type = "prob")
+
+fmetricas(abril_pred, clases_abril)
+
+```
+
+¿Interesante no? 
+
+Cambiando la función de control
+
+```{r}
+
+ganancia   <- function(probs, clases) 
+{
+
+   vlabels <- getinfo(clases, "label")
+
+   ganancia_calculada  <- sum(    (probs > 0.025 ) * 
+		                   ifelse( vlabels== 1, 19500, -500 )   
+              		     ) 
+   return(  list(metric = "ganancia", value = ganancia_calculada/ 0.2 )  )
+}
+
+kbase_score  <-  sum( clases_febrero ) / length(clases_febrero)
+
+set.seed(vsemilla[1])
+
+modelo_xgb_gan = xgb.cv( 
+				data = dtrain,  
+				missing = NA,
+				stratified = TRUE,       
+				nfold = 5 , 
+				objective="binary:logistic",
+				nround= 50, 
+				early_stopping_rounds = 20,
+				base_score = kbase_score ,
+				feval = ganancia,
+				tree_method = "hist",
+				grow_policy="lossguide",
+				 
+				maximize =TRUE,
+				verbose = 2
+			)
+```
+
+Vemos un fuerte sobreajuste.
+```{r}
+modelo_xgb_gan$best_iteration
+
+modelo_xgb_gan$evaluation_log
+
+```
+
+
+# Aplicamos al OOT
+
+```{r}
+
+modelo_xgb_2 = xgb.train( 
+				data = dtrain,  
+				missing = NA,
+				####
+				nround= 50,
+				####
+				maximize =TRUE,
+				objective="binary:logistic",
+				tree_method = "hist",
+				grow_policy="lossguide",
+			  verbose = 2
+			)
+
+abril_pred <- predict(modelo_xgb_2, data.matrix(abril),  type = "prob")
+
+fmetricas(abril_pred, clases_abril)
+
+```
+
+Vaya, parece que no siempre lo mejor en test, es lo mejor mejor...
+
+Ahora exploramos algunos de los otros atributos que tiene el paquete `XGBoost`, el primero es la importancia de variables:
+
+```{r}
+
+xgb.importance(colnames(dtrain), model = modelo_xgb_2)
+
+```
+
+* ¿Qué diferencias nota con respecto con la importancia de variables del `RF`?
+
+Juguemos una vez más con una variable canario:
+
+```{r}
+febrero_can <- febrero
+febrero_can$canario <- runif(nrow(febrero))
+
+dtrain2   <- xgb.DMatrix( data = data.matrix(febrero_can),  label = clases_febrero, missing=NA )
+
+
+modelo_xgb_3 = xgb.train( 
+				data = dtrain2,  
+				missing = NA,
+				nround= 11,
+				maximize =TRUE,
+				objective="binary:logistic",
+				tree_method = "hist",
+				grow_policy="lossguide",
+			  verbose = 2
+			)
+
+
+```
+
+Veamos en que posición aparece la variable canario:
+
+```{r}
+xgb.importance(colnames(dtrain2), model = modelo_xgb_3)
+```
+
+Vemos un menor sobreajuste en la configuración por defecto del `XGBoost` que la del `RF`. Sin embargo, todavía hay y reducir ese sobreajuste puede sumarnos mucho valor.
+
+* ¿Cuáles son los parámetros que nos ayudan a controlar el `overfitting`?
+
+Revise los parámetros, elija sus rangos y haga autotunning con una búsqueda bayesina:
+
+```{r}
+
+# Simplificada para devolver solamente la ganancia sobre test
+fmodelo_xgboost <- function (datos, clase, params, nround=50) {
+  
+  
+  kbase_score  <-  sum( clase ) / length(clase)
+  
+  
+  dtrain   <- xgb.DMatrix( data = data.matrix(datos),  label = clase, missing=NA )
+
+  
+  modelo = xgb.cv( 
+  				data = dtrain,  
+  				missing = NA,
+  				stratified = TRUE,       
+  				nfold = 5 , 
+  				objective="binary:logistic",
+  				nround= nround, 
+  				early_stopping_rounds = 20,
+  				base_score = kbase_score ,
+  				feval= ganancia,
+				  maximize =TRUE,
+				  eta = params[["eta"]],
+  				tree_method = "hist",
+				  grow_policy="lossguide"
+  )
+  return(max(modelo$evaluation_log$test_ganancia_mean))
+}
+
+# fmodelo_xgboost(febrero, clases_febrero, params=list(eta=.3))
+
+```
+Hay muchos detalles que mejorar, y no sólo los parámetros. Proponga mejoras en la forma de trabajar en el búsqueda Bayesiana.
+
+```{r, eval=FALSE}
+objetivo <- function (eta) {
+  
+   
+  r <- fmodelo_xgboost(febrero, clases_febrero, 
+                      params=list(eta=eta))
+
+  list( Score = r, Pred = 0 )
+}
+
+OPT_XGB <- BayesianOptimization( objetivo,
+           	bounds = list(eta =  c( 0,   1)),
+	   init_points = 50,  n_iter = 50,
+	   acq = "ucb", kappa = 2.576, eps = 0.001,
+	   verbose = TRUE
+	   )
+
+fwrite( as.data.table(OPT_XGB$History), "OPT_XGB.csv" )
+```
+

@@ -1,0 +1,258 @@
+---
+title: "Ensembles III - Need for Speed"
+author: "Alejandro Bolaños"
+date: "2019-10-07"
+version: 0.7
+output: 
+  html_document:
+    theme: spacelab
+    highlight: monochrome
+    df_print: paged
+#    toc: true
+#    toc_depth: 2
+
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+> The Need For Speed --- Maverick and Goose (Top Gun)
+
+Veremos en una pildora la última de las implementaciones de un GBM. Antes, tomemos un punto de comparación con nuestro amado `XGBoost`
+
+```{r}
+rm( list=ls() )
+gc()
+
+```
+
+Recuerde que estamos usando los datasets `dias` con formato RDS. 
+
+```{r}
+
+library( "data.table" )
+library(xgboost)
+library(ggplot2)
+
+febrero  <-  readRDS("../datasets/dias/201902.RDS")
+clases_febrero <- ifelse(febrero$clase_ternaria == "BAJA+2", 1, 0)
+febrero$clase_ternaria <- NULL
+
+abril  <-  readRDS("../datasets/dias/201904.RDS")
+clases_abril <- ifelse(abril$clase_ternaria == "BAJA+2", 1, 0)
+abril$clase_ternaria <- NULL
+
+vsemillas <- c(810757,482071,340979,446441,917513)
+
+
+```
+
+Y medimos un `XGBoost`, no solo por su calidad, sino también por su tiempo de entrenamiento:
+
+```{r}
+
+dtrain   <- xgb.DMatrix( data = data.matrix(febrero),  label = clases_febrero, missing=NA )
+
+t0 <- Sys.time()
+
+set.seed(vsemillas[1])
+modelo_xgb1 <- xgb.cv( 
+    data = dtrain,  
+    missing = NA,
+    stratified = TRUE,       
+    nround= 25,
+    nfold = 5,
+    watchlist = list(metric='auc'),
+    eval_metric= "auc",
+    maximize =TRUE,
+    objective="binary:logistic",
+    verbose = TRUE
+)
+
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo: " , tiempo, collapse = " "))
+
+max(modelo_xgb1$evaluation_log$test_auc_mean)
+
+```
+
+Recordamos que si sumamos dos parámetros podemos mejorar el tiempo de entrenamiento:
+
+```{r}
+t0 <- Sys.time()
+
+set.seed(vsemillas[1])
+modelo_xgb2 <- xgb.cv( 
+    data = dtrain,  
+    missing = NA,
+    stratified = TRUE,       
+    nround= 25,
+    nfold = 5,
+    watchlist = list(metric='auc'),
+    eval_metric= "auc",
+    maximize =TRUE,
+    tree_method = "hist",
+    grow_policy="lossguide",
+    objective="binary:logistic",
+    verbose = TRUE
+)
+
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo: " , tiempo, collapse = " "))
+
+max(modelo_xgb2$evaluation_log$test_auc_mean)
+```
+
+Y antes de no olvidarnos, vamos a jugar con el párametro `tree_method`, viendo otras formas de "bindear" (?) una variable
+
+```{r}
+t0 <- Sys.time()
+
+set.seed(vsemillas[1])
+modelo_xgb3 <- xgb.cv( 
+    data = dtrain,  
+    missing = NA,
+    stratified = TRUE,       
+    nround= 25,
+    nfold = 5,
+    watchlist = list(metric='auc'),
+    eval_metric= "auc",
+    maximize =TRUE,
+    tree_method = "approx",
+    grow_policy="lossguide",
+    objective="binary:logistic",
+    verbose = TRUE
+)
+
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo: " , tiempo, collapse = " "))
+
+max(modelo_xgb3$evaluation_log$test_auc_mean)
+
+```
+
+* Tardó más!! Por qué? 
+* Dió mejor, pero por muy poco. ¿Se puede entender que este pequeña en real o es fruto del azar?
+
+Pasemos a nuestro nuevo algoritmo:
+
+https://github.com/Microsoft/LightGBM/blob/master/docs/Features.rst
+
+Vemos que ofrece varias mejoras, probemos su funcionamiento: 
+
+*La ejecución de este algoritmo se recomienda hacer sobre la nube. No es complejo instalar la librería sobre el sistema operativo `Windows`, queda en alumno si desea hacer esto.
+
+```{r}
+
+library(lightgbm)
+
+dtrain_lgm <- lgb.Dataset(data.matrix(febrero), label = clases_febrero)
+
+params <- list(objective = "binary", metric = "auc")
+
+t0       <-  Sys.time()
+set.seed(vsemillas[1])
+modelo_lgbm1 <- lgb.cv(params,
+                dtrain_lgm,
+                tree_learner="serial",
+                25,
+                nfold = 5,
+                stratified = TRUE)
+t1       <-  Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo: " , tiempo, collapse = " "))
+
+max(modelo_lgbm1$best_score)
+
+```
+
+No tardo nada!!! Dio un poco por debajo que nuestro amado `XGBoost`, pero que elige:
+
+* Un algoritmo que tarda más y funciona mejor.
+* Apostar a un algoritmo que tarda menos, no funciona tan bien pero le va a dar más iteraciones cuando hiperparametrice. Recordemos que estamos usando la configuración por defecto.
+
+No es una decisión fácil. Mi consejo, no pierda de vista ninguno de los dos algoritmos hasta avanzada la cursada.
+
+Repasemos los siguientes documentos:
+
+Documentos importantes para leer:
+
+https://github.com/Microsoft/LightGBM/blob/master/docs/Parameters.rst
+
+https://lightgbm.readthedocs.io/en/latest/Parameters-Tuning.html
+
+Midamos el modelo en `Abril`:
+
+```{r}
+modelo.lgbm.train <- lgb.train(params,
+                dtrain_lgm,
+                25)
+
+
+y_predlgbm <- predict(modelo.lgbm.train, data.matrix(abril),  type = "prob")
+sum((y_predlgbm >( 0.025) ) * ifelse( clases_abril== 1, 19500, -500 )) 
+
+
+```
+
+Y su importancia de variables:
+
+```{r}
+
+imp <- lgb.importance(modelo.lgbm.train)
+imp
+
+```
+
+Ambas librería cuentan muchas opciones que son muy útiles. Veamos la creación de nuevas variables:
+
+```{r}
+modelo_xgb_train1 <- xgb.train( 
+				data = dtrain,  
+				missing = NA,
+				nround= 11,
+				maximize =TRUE,
+				objective="binary:logistic",
+				tree_method = "hist",
+				grow_policy="lossguide",
+			  verbose = 2
+			)
+
+new.features.train <- xgb.create.features(model = modelo_xgb_train1, as.matrix(febrero))
+colnames(new.features.train)
+```
+
+
+```{r}
+new.dtrain <- xgb.DMatrix(data = new.features.train, label = clases_febrero)
+
+set.seed(vsemillas[1])
+
+t0 <- Sys.time()
+modelo_xgb4 <- xgb.cv( 
+    data = new.dtrain,  
+    missing = NA,
+    stratified = TRUE,       
+    nround= 25,
+    nfold = 5,
+    watchlist = list(metric='auc'),
+    eval_metric= "auc",
+    maximize =TRUE,
+    tree_method = "hist",
+    grow_policy="lossguide",
+    objective="binary:logistic",
+    verbose = TRUE
+)
+
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo: " , tiempo, collapse = " "))
+
+max(modelo_xgb4$evaluation_log$test_auc_mean)
+
+```
+
+En las siguientes clases seguiremos viendo utilidades de estas librerías. 

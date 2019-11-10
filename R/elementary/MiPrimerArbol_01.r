@@ -47,6 +47,12 @@ tcorrida <-  as.numeric( t1 - t0, units = "secs")
 print( tcorrida)
 
 
+#variables usadas en el arbol
+frame  <- modelo$frame
+leaves <- frame$var == "<leaf>"
+used   <- unique(frame$var[!leaves])
+
+
 #impresion un poco mas elaborada del arbol
 jpeg(file = karchivo_imagen,  width = 6, height = 4, units = 'in', res = 300)
 prp(modelo, extra=101, digits=5, branch=1, type=4, varlen=0, faclen=0)

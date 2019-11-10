@@ -1,0 +1,864 @@
+---
+title: "Time after time"
+author: "Alejandro Bolaños"
+date: "2019-10-16"
+version: 0.7
+output: 
+  html_document:
+    theme: spacelab
+    highlight: monochrome
+    df_print: paged
+#    toc: true
+#    toc_depth: 2
+
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+> Everything does go in a circle --- Cyndi Lauper
+
+Los modelos siempre están pensados para ser ejecutados en una instancia futura.
+
+También nos planteamos recientemente que no necesariamente tenemos que entrenar en el periodo válido anterior (i.e `Febrero` para predecir `Abril`), sino que quizás es conveniente otro periodo. 
+
+A la vez es muy importante entender cuanto tiempo se mantiene un modelo sin degradarse y si el reajuste constante (volver a entrenar con los mismos parámetros) o la recalibración (buscar nuevos parámetros) son la mejor opción.
+
+Lo que es muy importante, es que podamos podamos elegir un modelo sobre otros, comparandolos en diferentes periodos y no sólo en uno. 
+
+```{r}
+
+rm( list=ls() )
+gc()
+
+```
+
+Vamos a recalcular el target para el dataset completo:
+
+```{r}
+
+library( "data.table" )
+
+ds_target  <-
+  fread(
+    "../datasetsOri/paquete_premium.txt",
+    header = TRUE,
+    select = c("numero_de_cliente", "foto_mes", "clase_ternaria"),
+    sep = "\t",
+    key = "numero_de_cliente,foto_mes"
+  )
+
+setorderv(ds_target, c("numero_de_cliente", "foto_mes"), c(1,1))
+vsemillas <- c(810757,482071,340979,446441,917513)
+
+# Recibe el vector con clase_ternaria para cada cliente.
+mi_target <- function (x) {
+  
+  baja1 <- which(x == "BAJA+1") 
+  if (length(baja1) == 0L) {
+    out <- rep(0L, length(x))
+  } else {
+    
+    out <- unlist(lapply(diff(c(0L,baja1)), function (x) { seq(x,1L)}))
+    
+    # Puede pasar que el cliente vuelva y no se vaya 
+    if (length(out) != length(x)) {
+      out <- c(out, rep(0L,length(x)-length(out))) 
+    }
+  }
+  out
+}
+
+ds_target[, new_class := mi_target(clase_ternaria) , by=numero_de_cliente]
+ds_target[, new_class := ifelse(clase_ternaria == "",NA_integer_, new_class), by=numero_de_cliente]
+  
+```
+
+Y sumamos algunas funciones auxiliares, para hacernos la vida más fácil.
+
+La primera es una operación entre un periodo y un número entero:
+
+* Usemos la función browser(), y el **enorme** ahorro de tiempo que nos genera.
+
+```{r}
+periodo_delta <- function (foto_mes, delta) {
+  
+  len <-2
+  
+  step_cant <- delta
+  
+  step <- paste0(step_cant, " months")
+  
+  resultado <-  as.integer(strftime(seq(
+    as.Date(paste0(foto_mes, "01"), format = "%Y%m%d"),
+    length = len,
+    by = step
+  ), format = "%Y%m"))
+  
+  return(resultado[2])
+
+  }
+
+periodo_delta(201901,-3)
+periodo_delta(201901, 3)
+periodo_delta(201901, 0)
+```
+
+Ampliamos la anterior, pero devolviendo todos los elementos intermedios:
+
+```{r}
+periodos_delta_serie <- function (foto_mes, delta) {
+  sapply(0:(delta), periodo_delta, foto_mes=foto_mes)
+}
+
+periodos_delta_serie(201901,-3)
+periodos_delta_serie(201901, 3)
+periodos_delta_serie(201901, 0)
+```
+
+Utilizamos nuestras funciones auxiliares para cargar una secuencia de meses. Agregamos nuestra nueva clase, separamos los datos de la clases y los devolvemos en una lista: 
+
+```{r}
+
+cargar_meses <- function(foto_mes, diferencia) {
+  dataset_list <- list()
+  clases_vector <- c()
+  
+  for (fm in periodos_delta_serie(foto_mes, diferencia)) {
+    dataset_mes <- readRDS(paste0("../datasets/dias/", fm, ".RDS"))
+    setkey(dataset_mes, numero_de_cliente)
+    dataset_mes <-
+      merge(dataset_mes, ds_target[foto_mes == fm, .(numero_de_cliente, new_class)], all =
+              FALSE)
+    
+    clases <- dataset_mes[, new_class]
+    dataset_mes[, clase_ternaria := NULL]
+    dataset_mes[, new_class := NULL]
+    dataset_mes[, numero_de_cliente := NULL]
+    dataset_mes[, foto_mes := NULL]
+    
+    dataset_list[[as.character(fm)]] <- dataset_mes
+    clases_vector <- c(clases_vector, clases)
+  }
+  resultado <- list()
+  resultado[["datos"]] <- rbindlist(dataset_list)
+  resultado[["clases"]] <- clases_vector
+  resultado
+}
+
+
+```
+
+Definimos nuestra función de métricas. Vamos a calcular en la misma:
+
+* AUC
+* Ganancia, para un punto de corte definido
+* Captura
+* Curva de ganancia
+  * Curva
+  * Mejor ganancia
+  * Mejor punto de corte
+  * Mejor captura
+  
+
+```{r}
+
+library(ROCR)
+
+metricas <-
+  function (probabilidades,
+            clases,
+            punto_corte = 0.025,
+            curva_ganancia = TRUE,
+            rango_curva = c(0.002, 0.15),
+            paso_curva = 0.001) {
+    resultado <- list()
+    
+    
+    roc <-  ROCR::prediction(probabilidades,
+                             clases,
+                             label.ordering = c(0, 1))
+    resultado$auc <- unlist(ROCR::performance(roc, "auc")@y.values)
+    
+    dt_temp <- data.table(probabilidades, clases)
+    
+    dt_temp[, v := ifelse(clases == 1, 19500,-500)]
+    
+    resultado$captura <-
+      dt_temp[probabilidades > punto_corte, sum(clases)] / dt_temp[, sum(clases)]
+    
+    resultado$ganancia <-
+      dt_temp[probabilidades > punto_corte, sum(v)]
+    
+    if (curva_ganancia) {
+      dt_temp2 <- dt_temp[, .(gan = sum(v)), by = probabilidades]
+      
+      setorder(dt_temp2, -probabilidades)
+      
+      dt_temp2[, ganancia := cumsum(gan)]
+      
+      resultado$curva$max_ganancia <-
+        dt_temp2[max(ganancia) == ganancia, ganancia]
+      
+      resultado$curva$mejor_punto_corte <-
+        dt_temp2[max(ganancia) == ganancia, probabilidades]
+      
+      x <-
+        seq(from = rango_curva[1],
+            to = rango_curva[2],
+            by = paso_curva)
+      y <-
+        sapply(x, function(x)
+          dt_temp[probabilidades > x, sum(v)])
+      
+      resultado$curva$graph <- data.table(x, y)
+      
+      
+      resultado$curva$captura <-
+        dt_temp[probabilidades > resultado$curva$mejor_punto_corte, sum(clases)] /
+        dt_temp[, sum(clases)]
+      
+    }
+    
+    resultado
+  }
+
+
+```
+
+Definimos una función para modelar, usando `XGBoost`. 
+
+```{r}
+
+library(xgboost)
+
+modelar_xgb_train <- function(ds,
+           target,
+           param = list(tree_method = "hist",
+                        grow_policy = "lossguide")) {
+    dtrain   <-
+      xgb.DMatrix(data = data.matrix(ds),
+                  label = target,
+                  missing = NA)
+    xgb.train(
+      param,
+      data = dtrain,
+      nrounds = 50,
+      missing = NA,
+      maximize = TRUE,
+      objective = "binary:logistic",
+      verbose = FALSE
+    )
+  }
+```
+
+Sería interesante poder cambiar esta función, por un modelo un poco mejor. ¿Se anima?
+
+Y por último, definimos una función auxiliar para los experimentos. Donde agregamos las clases que queremos usar para entrenar:
+
+```{r}
+
+tipo_experimento_1 <- function(mes_train, mes_test, clases_elegidas, curva = FALSE) {
+  train <- cargar_meses(mes_train, 0)
+  test <- cargar_meses(mes_test, 0)
+
+  train$clases_binaria <- ifelse(train$clases %in% clases_elegidas, 1, 0)
+  test$clases_binaria <- ifelse(test$clases == 2, 1, 0)
+  
+  modelo <- modelar_xgb_train(train$datos, train$clases_binaria)
+  probabilidades <- predict(modelo, data.matrix(test$datos), type = "prob")
+  
+  metricas(probabilidades, test$clases_binaria, curva_ganancia = curva)
+}
+
+
+```
+
+Con esta pequeña `librería` de funciones, nos adentramos **experimentar** para responder algunas preguntas. La primera, y a modo de prueba de nuestras funciones:
+
+* ¿Qué mes es mejor para entrenar, el mes más cercano, o el mismo mes del año anterior?
+
+Dejaremos en esta, y en las siguientes preguntas, que la profundidad de la respuesta la alcance el alumno. Ahora, nos limitaremos a experimentar con algunos meses desde 201812 a 201904:
+
+```{r, eval=FALSE}
+
+# 201812 201901 201902 201903 201904
+elementos_prueba <- periodos_delta_serie(201812, 4)
+
+resultados <- data.table()
+
+for (e in elementos_prueba) {
+  
+  print(paste("Procesando: ", e))
+  
+  dos_meses_antes <- periodo_delta(e, -2)
+  anio_antes <- periodo_delta(e, -12)
+  
+  r_dos_meses_antes <- tipo_experimento_1(dos_meses_antes, e, c(2))
+  r_dos_meses_antes[["objetivo"]] <- e
+  r_dos_meses_antes[["entrenamiento"]] <- "dos_meses_antes"
+  r_dos_meses_antes[["entrenamiento_p"]] <- dos_meses_antes
+  
+  r_anio_antes <- tipo_experimento_1(anio_antes, e, c(2))
+  r_anio_antes[["objetivo"]] <- e
+  r_anio_antes[["entrenamiento"]] <- "anio_antes"
+  r_anio_antes[["entrenamiento_p"]] <- anio_antes
+  
+  resultados <- rbindlist(list(resultados, r_dos_meses_antes, r_anio_antes))
+}
+
+fwrite(resultados, "resultados/10_TAT_res1.csv")
+```
+
+```{r}
+fread("resultados/10_TAT_res1.csv")
+```
+
+¿Conclusiones? ¿Que supone que pasaría con Junio del 2019? ¿Cómo lo probaría?
+
+Luego de las siguientes pruebas, se recomienda volver a esta y mejorarla. 
+
+A continuación vamos a hacer una prueba similar. Vamos a ver que tan estable es un modelo a lo largo del tiempo, o cuanta degradación tiene. Muy importante de tener en cuenta si no es una alternativa el reentrenamiento constante del modelo.
+
+
+```{r, eval=FALSE}
+
+abril2018 <- cargar_meses(201804, 0)
+abril2018$clases_binaria <- ifelse(abril2018$clases %in% c(2), 1, 0)
+modelo_abril2018 <- modelar_xgb_train(abril2018$datos, abril2018$clases_binaria)
+
+resultados <- data.table()
+for (fm in periodos_delta_serie(201806, 10))  {
+  
+  test <- cargar_meses(fm, 0)
+  test$clases_binaria <- ifelse(test$clases == 2, 1, 0)
+  probabilidades <- predict(modelo_abril2018, data.matrix(test$datos), type = "prob")
+  r <- metricas(probabilidades, test$clases_binaria)
+  
+  # Curiosiamos el mejor punto de corta, sospechamos que se puede correr a medida que nos alejamos.
+  r[["mejor_punto_corte"]] <- r$curva$mejor_punto_corte
+  
+  # Borramos la variable dentro de la lista.
+  r[["curva"]] <- NULL
+  r[["periodo"]] <- fm
+  
+  resultados <- rbindlist(list(resultados, r))
+  
+}
+
+fwrite(resultados, "resultados/10_TAT_res2.csv")
+```
+
+```{r}
+resultados2 <- fread("resultados/10_TAT_res2.csv")
+resultados2
+```
+
+Grafiquemos
+
+```{r}
+library(ggplot2)
+
+resultados2[, x := .I]
+
+ggplot(data=resultados2, aes(x=x, y=auc)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados2$periodo, breaks = resultados2$x) +
+  ggtitle("AUC") +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=resultados2, aes(x=x, y=ganancia)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados2$periodo, breaks = resultados2$x) +
+  ggtitle("Ganancia") +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=resultados2, aes(x=x, y=mejor_punto_corte)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados2$periodo, breaks = resultados2$x) +
+  ggtitle("Mejor Punto de Corte") +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=resultados2, aes(x=x, y=captura)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados2$periodo, breaks = resultados2$x) +
+  ggtitle("Captura") +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+Realizamos el mismo experimento, pero reentrenando siempre con respecto al mes anterior:
+
+```{r, eval=FALSE}
+
+resultados <- data.table()
+
+for (fm in periodos_delta_serie(201806, 10))  {
+  
+  # La belleza de contar con lindas funciones!!
+  r <- tipo_experimento_1(periodo_delta(fm, -2), fm, c(2), curva = TRUE)
+
+  r[["mejor_punto_corte"]] <- r$curva$mejor_punto_corte
+  
+  # Borramos la variable dentro de la lista.
+  r[["curva"]] <- NULL
+  r[["periodo"]] <- fm
+  
+  resultados <- rbindlist(list(resultados, r))
+  
+}
+
+fwrite(resultados, "resultados/10_TAT_res3.csv")
+```
+
+```{r}
+resultados3 <- fread("resultados/10_TAT_res3.csv")
+resultados3
+```
+Nuevamente graficamos
+
+```{r}
+library(ggplot2)
+
+resultados3[, x := .I]
+
+ggplot(data=resultados3, aes(x=x, y=auc)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados3$periodo, breaks = resultados3$x) +
+  ggtitle("AUC") +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=resultados3, aes(x=x, y=ganancia)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados3$periodo, breaks = resultados3$x) +
+  ggtitle("Ganancia") +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=resultados3, aes(x=x, y=mejor_punto_corte)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados3$periodo, breaks = resultados3$x) +
+  ggtitle("Mejor Punto de Corte") +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+Y juntamos las gráficas para ver si notamos si alguna de las dos estrategías es ligeramente superior:
+
+```{r}
+resultados2[["tipo"]] <- "201804"
+resultados3[["tipo"]] <- "dos_meses"
+
+mix <- rbindlist(list(resultados2, resultados3))
+
+ggplot(data=mix, aes(x=x, y=auc, color=tipo)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados3$periodo, breaks = resultados3$x) +
+  ggtitle("AUC") +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=mix, aes(x=x, y=ganancia, color=tipo)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados3$periodo, breaks = resultados3$x) +
+  ggtitle("Ganancia") +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=mix, aes(x=x, y=mejor_punto_corte, color=tipo)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados3$periodo, breaks = resultados3$x) +
+  ggtitle("Mejor Punto de Corte") +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+Tomando una decisión difícil, decidimos continuar (por ahora) con el reentrenamiento a dos meses.
+
+Recordando la clase pasada, vamos a jugar ahora con las clases. Primero veamos los efectos de las clases sobre las curvas de ganancias:
+
+```{r}
+
+r1 <- tipo_experimento_1(201805, 201806, c(1), curva = TRUE) # Por qué no?
+r2 <- tipo_experimento_1(201804, 201806, c(2), curva = TRUE)
+r3 <- tipo_experimento_1(201804, 201806, c(1,2), curva = TRUE)
+r4 <- tipo_experimento_1(201803, 201806, c(1,2,3), curva = TRUE)
+r5 <- tipo_experimento_1(201802, 201806, c(1,2,3,4), curva = TRUE)
+
+r1$curva$graph[["tipo"]] <- "BAJA+1"
+r2$curva$graph[["tipo"]] <- "BAJA+2"
+r3$curva$graph[["tipo"]] <- "BAJA+1+2"
+r4$curva$graph[["tipo"]] <- "BAJA+1+2+3"
+r5$curva$graph[["tipo"]] <- "BAJA+1+2+3+4"
+
+mix <- rbindlist(list(r1$curva$graph,r2$curva$graph,r3$curva$graph,r4$curva$graph))
+
+ggplot(data=mix, aes(x=x, y=y, color=tipo)) +
+  geom_line(size=1)+
+  ggtitle("Ganancia")
+```
+
+Recordemos que cuando agrupamos las clases, se rebalancea el target.
+
+Veamos lo mismo de forma tabular:
+
+```{r}
+r1[["tipo"]] <- "BAJA+1"; r1[["max_ganancia"]] <- r1$curva[["max_ganancia"]]; 
+r2[["tipo"]] <- "BAJA+2"; r2[["max_ganancia"]] <- r2$curva[["max_ganancia"]]; 
+r3[["tipo"]] <- "BAJA+1+2"; r3[["max_ganancia"]] <- r3$curva[["max_ganancia"]]; 
+r4[["tipo"]] <- "BAJA+1+2+3"; r4[["max_ganancia"]] <- r4$curva[["max_ganancia"]]; 
+r5[["tipo"]] <- "BAJA+1+2+3+4"; r5[["max_ganancia"]] <- r5$curva[["max_ganancia"]];  
+
+r1$curva <- NULL
+r2$curva <- NULL
+r3$curva <- NULL
+r4$curva <- NULL
+r5$curva <- NULL
+
+rbindlist(list(r1,r2,r3,r4,r5))
+```
+
+Vamos a repetir el `experimento 3` pero juntando dos clases, queremos ver si es una mejora significativa:
+
+```{r, eval=FALSE}
+
+resultados <- data.table()
+
+for (fm in periodos_delta_serie(201806, 10))  {
+  
+  # Agregamos sólo un número!!
+  r <- tipo_experimento_1(periodo_delta(fm, -2), fm, c(1, 2), curva = TRUE)
+
+  r[["mejor_punto_corte"]] <- r$curva$mejor_punto_corte
+  
+  # Borramos la variable dentro de la lista.
+  r[["curva"]] <- NULL
+  r[["periodo"]] <- fm
+  
+  resultados <- rbindlist(list(resultados, r))
+  
+}
+
+fwrite(resultados, "resultados/10_TAT_res4.csv")
+```
+
+```{r}
+resultados4 <- fread("resultados/10_TAT_res4.csv")
+resultados4
+```
+
+Gráfiquemos comparando con el reentrenamiento:
+
+```{r}
+
+resultados4[, x := .I]
+resultados4[["tipo"]] <- "dos_meses_B+1+2"
+
+mix <- rbindlist(list(resultados4, resultados3))
+
+ggplot(data=mix, aes(x=x, y=auc, color=tipo)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados3$periodo, breaks = resultados3$x) +
+  ggtitle("AUC") +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=mix, aes(x=x, y=ganancia, color=tipo)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados3$periodo, breaks = resultados3$x) +
+  ggtitle("Ganancia") +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=mix, aes(x=x, y=mejor_punto_corte, color=tipo)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados3$periodo, breaks = resultados3$x) +
+  ggtitle("Mejor Punto de Corte") +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+¿Conclusiones? ¿Alguna idea para el punto de corte? Recordemos que el punto de corte máximo es un dato que **NO VAMOS A TENER**.
+
+Buscando mejorar más el modelo, sumaremos más meses de entrenamiento. Cambiamos nuestra función de experimento para tal fin, algo muy sencillo:
+
+```{r}
+
+tipo_experimento_2 <- function(mes_train, delta_train, mes_test, clases_elegidas, curva = FALSE) {
+  train <- cargar_meses(mes_train, delta_train)
+  test <- cargar_meses(mes_test, 0)
+
+  train$clases_binaria <- ifelse(train$clases %in% clases_elegidas, 1, 0)
+  test$clases_binaria <- ifelse(test$clases == 2, 1, 0)
+  
+  modelo <- modelar_xgb_train(train$datos, train$clases_binaria)
+  probabilidades <- predict(modelo, data.matrix(test$datos), type = "prob")
+  
+  metricas(probabilidades, test$clases_binaria, curva_ganancia = curva)
+}
+
+```
+
+El límite de esta práctica se encuentra en sumar 2 y 3 meses. El alumno deberá repetir esto mismo hasta _al menos 9 meses_.
+
+Para 2 meses:
+
+```{r, eval=FALSE}
+
+resultados <- data.table()
+
+for (fm in periodos_delta_serie(201806, 10))  {
+  
+  # Agregamos sólo un número!!
+  r <- tipo_experimento_2(periodo_delta(fm, -2), -1, fm, c(1, 2), curva = TRUE)
+
+  r[["mejor_punto_corte"]] <- r$curva$mejor_punto_corte
+  
+  # Borramos la variable dentro de la lista.
+  r[["curva"]] <- NULL
+  r[["periodo"]] <- fm
+  
+  resultados <- rbindlist(list(resultados, r))
+  
+}
+
+fwrite(resultados, "resultados/10_TAT_res5.csv")
+```
+
+```{r}
+resultados5 <- fread("resultados/10_TAT_res5.csv")
+```
+
+Para 3 meses:
+
+```{r, eval=FALSE}
+resultados <- data.table()
+
+for (fm in periodos_delta_serie(201806, 10))  {
+  
+  # Agregamos sólo un número!!
+  r <- tipo_experimento_2(periodo_delta(fm, -2), -2, fm, c(1, 2), curva = TRUE)
+
+  r[["mejor_punto_corte"]] <- r$curva$mejor_punto_corte
+  
+  # Borramos la variable dentro de la lista.
+  r[["curva"]] <- NULL
+  r[["periodo"]] <- fm
+  
+  resultados <- rbindlist(list(resultados, r))
+  
+}
+
+fwrite(resultados, "resultados/10_TAT_res6.csv")
+```
+
+```{r}
+resultados6 <- fread("resultados/10_TAT_res6.csv")
+```
+
+Juntamos todo y graficamos, tomando como referencia el `experimento 4`
+
+```{r}
+resultados5[, x := .I]
+resultados5[["tipo"]] <- "dos_meses_B+1+2_acum2"
+resultados6[, x := .I]
+resultados6[["tipo"]] <- "dos_meses_B+1+2_acum3"
+
+mix <- rbindlist(list(resultados4, resultados5,resultados6))
+
+ggplot(data=mix, aes(x=x, y=auc, color=tipo)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados4$periodo, breaks = resultados4$x) +
+  ggtitle("AUC") +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=mix, aes(x=x, y=ganancia, color=tipo)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados4$periodo, breaks = resultados4$x) +
+  ggtitle("Ganancia") +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=mix, aes(x=x, y=mejor_punto_corte, color=tipo)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados4$periodo, breaks = resultados4$x) +
+  ggtitle("Mejor Punto de Corte") +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+¿Conclusiones? ¿Puede uno entender con la gráfica anterior que el punto de corte depende más de la proporción de la clase que de la cardinalidad del dataset?
+
+Vamos a entender que sumar meses es algo bueno, y si bien no tenemos una garantía, vamos a elegir los 3 meses. Esto debe alertar al alumno a seguir sumando meses y a ver si se logran mayores ganancias.
+
+Como estamos sumando más meses, podríamos probar aumentar el número de clases para entrenar, pero lo debemos hacer con mucho cuidado. Modificamos el experimento para poder incluir más clases:
+
+```{r}
+diff_periodos <- function(p1, p2) {
+  d1 <- as.Date(paste0(p1, "01"), format = "%Y%m%d")    
+  d2 <- as.Date(paste0(p2, "01"), format = "%Y%m%d")
+  as.integer(round((d1 - d2)/(365.25/12)))
+}
+
+tipo_experimento_3 <- function(mes_train, delta_train, mes_test, clases_elegidas, curva = FALSE) {
+  
+  #train <- cargar_meses(mes_train, delta_train)
+  dataset_list <- list()
+  clases_vector <- c()
+  
+  for (i in 1:delta_train) {
+    fm <- periodo_delta(mes_train, i)
+    dataset_mes <- readRDS(paste0("../datasets/dias/", fm, ".RDS"))
+    setkey(dataset_mes, numero_de_cliente)
+    dataset_mes <-
+      merge(dataset_mes, ds_target[foto_mes == fm, .(numero_de_cliente, new_class)], all =
+              FALSE)
+    
+    clases <- dataset_mes[, new_class]
+    
+    # No deja elegir clases con target mayor al mes de test
+    c_aux <- clases_elegidas
+    max_clase <- diff_periodos(mes_test, fm)
+    c_aux <- unique(ifelse(c_aux <= max_clase, c_aux, max_clase))
+    
+    clases_binaria <- ifelse(clases %in% c_aux, 1, 0)
+    
+    dataset_mes[, clase_ternaria := NULL]
+    dataset_mes[, new_class := NULL]
+    dataset_mes[, numero_de_cliente := NULL]
+    dataset_mes[, foto_mes := NULL]
+    
+    dataset_list[[as.character(fm)]] <- dataset_mes
+    clases_vector <- c(clases_vector, clases_binaria)
+  }
+  
+  train <- list()
+  train[["datos"]] <- rbindlist(dataset_list)
+  train[["clases_binaria"]] <- clases_vector
+
+  test <- cargar_meses(mes_test, 0)
+
+  test$clases_binaria <- ifelse(test$clases == 2, 1, 0)
+  
+  modelo <- modelar_xgb_train(train$datos, train$clases_binaria)
+  probabilidades <- predict(modelo, data.matrix(test$datos), type = "prob")
+  
+  metricas(probabilidades, test$clases_binaria, curva_ganancia = curva)
+}
+
+```
+
+Y ejecutamos experimento anterior con esta nuevas clases:
+
+```{r, eval=FALSE}
+
+resultados <- data.table()
+
+for (fm in periodos_delta_serie(201806, 10))  {
+  
+  r <- tipo_experimento_3(periodo_delta(fm, -2), -2, fm, c(1, 2, 3), curva = TRUE)
+
+  r[["mejor_punto_corte"]] <- min(r$curva$mejor_punto_corte)
+  
+  # Borramos la variable dentro de la lista.
+  r[["curva"]] <- NULL
+  r[["periodo"]] <- fm
+  
+  resultados <- rbindlist(list(resultados, r))
+  
+}
+
+fwrite(resultados, "resultados/10_TAT_res7.csv")
+
+```
+
+```{r}
+resultados7 <- fread("resultados/10_TAT_res7.csv")
+```
+
+Y graficamos en silencio:
+
+```{r}
+
+resultados7[, x := .I]
+resultados7[["tipo"]] <- "dos_meses_B+1+2+3_acum3"
+
+mix <- rbindlist(list(resultados6, resultados7))
+
+ggplot(data=mix, aes(x=x, y=auc, color=tipo)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados6$periodo, breaks = resultados6$x) +
+  ggtitle("AUC") +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=mix, aes(x=x, y=ganancia, color=tipo)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados6$periodo, breaks = resultados6$x) +
+  ggtitle("Ganancia") +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=mix, aes(x=x, y=mejor_punto_corte, color=tipo)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados6$periodo, breaks = resultados6$x) +
+  ggtitle("Mejor Punto de Corte") +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+Vaya... con el mismo punto de corte de `0.025`, nos da una ganancia por debajo. Es algo que ya vimos antes, el punto de corte es muy bajo para esta clase. Estudiar como se puede mejorar.
+
+Por último comparamos nuestro campeón con el modelo simple con reentrenamiento:
+
+```{r}
+
+mix <- rbindlist(list(resultados3, resultados6))
+
+ggplot(data=mix, aes(x=x, y=auc, color=tipo)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados6$periodo, breaks = resultados6$x) +
+  ggtitle("AUC") +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=mix, aes(x=x, y=ganancia, color=tipo)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados6$periodo, breaks = resultados6$x) +
+  ggtitle("Ganancia") +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=mix, aes(x=x, y=mejor_punto_corte, color=tipo)) +
+  geom_line(size=1)+
+  scale_x_continuous(labels = resultados6$periodo, breaks = resultados6$x) +
+  ggtitle("Mejor Punto de Corte") +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+Vemos con:
+
+* Juntar clases BAJA+1 y BAJA+2
+* Acumular 3 meses
+
+Contamos con una mejora sustancial, no sólo en un mes. Es consistente a lo largo del tiempo. Y no aplicamos todavía conocimientos que ya sabemos:
+
+* Mejorar el punto de corte.
+* Agregar nuevas variables.
+* Hiperoptimización.
+* Analizar cuantos meses de debemos acumular.
+
+
+Ahora que tiene un visión un poco más amplia, se recomienda revisar todo una vez más.

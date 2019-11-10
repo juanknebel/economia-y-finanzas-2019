@@ -1,0 +1,390 @@
+---
+title: "Guerra de clases"
+author: "Alejandro Bolaños"
+date: "2019-10-07"
+version: 0.7
+output: 
+  html_document:
+    theme: spacelab
+    highlight: monochrome
+    df_print: paged
+#    toc: true
+#    toc_depth: 2
+
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+> Todos somos iguales pero algunos somos más iguales que otros --- George Orwell 
+
+En esta notebook vamos a discutir el uso de la clase `BAJA+2` como clase de entrenamiento. Ya sospechamos desde la primera clase que su comportamiento es muy similar a la clase `BAJA+1`. Además sospechamos que sumar más información ayuda a los modelos a separar la paja del trigo, por lo cuál hoy vamos a sumergirnos en la mezcla de las clases.
+
+
+```{r}
+
+rm( list=ls() )
+gc()
+
+```
+
+Vamos a recalcular el target para el dataset completo, pero no vamos a levantar todas las variabls, sólo leemos las variables que nos interesan:
+
+```{r}
+
+library( "data.table" )
+
+ds  <-
+  fread(
+    "../datasetsOri/paquete_premium.txt",
+    header = TRUE,
+    select = c("numero_de_cliente", "foto_mes", "clase_ternaria"),
+    sep = "\t",
+    key = "numero_de_cliente,foto_mes"
+  )
+
+setorderv(ds, c("numero_de_cliente", "foto_mes"), c(1,1))
+vsemillas <- c(810757,482071,340979,446441,917513)
+
+
+```
+
+Ahora recalculemos la variable target, más adelante veremos como se calcula. 
+
+```{r}
+
+# Recibe el vector con clase_ternaria para cada cliente.
+my_target <- function (x) {
+  
+  baja1 <- which(x == "BAJA+1") 
+  if (length(baja1) == 0L) {
+    out <- rep(0L, length(x))
+  } else {
+    
+    out <- unlist(lapply(diff(c(0L,baja1)), function (x) { seq(x,1L)}))
+    
+    # Puede pasar que el cliente vuelva y no se vaya 
+    if (length(out) != length(x)) {
+      out <- c(out, rep(0L,length(x)-length(out))) 
+    }
+  }
+  out
+}
+
+```
+
+Primero probemos que funciona:
+
+```{r}
+
+vieja_clase <- ds[numero_de_cliente == 4566109, .(foto_mes, clase_ternaria)]
+data.table(vieja_clase, nueva_clase = my_target(vieja_clase[,clase_ternaria]))
+
+```
+
+Y aplicamos el nuevo target a todo el conjunto de datos:
+
+```{r}
+
+ds[, new_class := my_target(clase_ternaria) , by=numero_de_cliente]
+ds[, new_class := ifelse(clase_ternaria == "",NA_integer_,new_class), by=numero_de_cliente]
+  
+```
+
+Veamos primero si hay personas que salieron del pack premium. volvieron a entrar:
+
+```{r}
+cl_temp <- ds[new_class == 1, .(.N, max(foto_mes)), by=numero_de_cliente]
+setorder(cl_temp, -N)
+cl_temp[N > 1,]
+```
+
+Vemos que es un comportamiento que existe, aunque es muy bajo. Con esta información, veamos como construir nuestro nuevo target:
+
+A la función le vamos a pasar la clase ternaria, veamos como sería los vectores para 3 casos: 
+
+```{r}
+se_va <- 4566109
+no_se_va <- 4566150
+se_va_y_vuelve <- 46894709
+
+ds[numero_de_cliente == se_va, clase_ternaria]
+ds[numero_de_cliente == no_se_va, clase_ternaria]
+ds[numero_de_cliente == se_va_y_vuelve, clase_ternaria]
+```
+
+Nuestra estrategia es buscar la clase `BAJA+1` y reemplazar la misma por 1. Luego a los meses anteriores reemplazar por 2, 3, 4, etc. En caso que la persona no se vaya, poner todo en cero. Busquemos la clase `BAJA+1`:
+
+```{r}
+
+which(ds[numero_de_cliente == se_va, clase_ternaria] == "BAJA+1") 
+which(ds[numero_de_cliente == no_se_va, clase_ternaria] == "BAJA+1") 
+which(ds[numero_de_cliente == se_va_y_vuelve, clase_ternaria] == "BAJA+1") 
+
+```
+
+Vemos que en el primer y segundo caso se muestra simple, pero podemos tener problemas en el tercero.
+
+```{r}
+
+diff(c(0L,which(ds[numero_de_cliente == se_va_y_vuelve, clase_ternaria] == "BAJA+1") ))
+
+unlist(lapply(diff(c(0L,which(ds[numero_de_cliente == se_va_y_vuelve, clase_ternaria] == "BAJA+1"))), function (x) { seq(x,1L)}))
+```
+
+Y también puede pasar que un cliente vuelva y no se vaya, por eso se completa con 0, como se lee en la función.
+
+# IMPORTANTE
+
+> Quién me ha robado el mes de abril, Lo guardaba en el cajón --- Joaquín Sabina.
+
+Dejaremos de usar el mes `201904`, o al menos con la frecuencia con el que lo haciamos hasta ahora. 
+
+Todo lo que haga de ahora en adelante debe ser agnostico al mes, generalice sus funciones para ser usadas con cualquier mes. Si su modelo es bueno, debe ser bueno para cualquier mes. Si su modelo solo es bueno en `201904`, dude. Dude. Dude. 
+
+Vamos a mirar en `201806` la distrubición de nuestra nuevas clases:
+
+```{r}
+
+junio2018 <- readRDS("../datasets/dias/201806.RDS")
+setkey(junio2018, numero_de_cliente)
+```
+
+Y agregamos la nueva clase:
+
+```{r}
+
+
+junio2018 <- merge(junio2018, ds[foto_mes == 201806, .(numero_de_cliente,new_class)], all=FALSE)
+
+head(junio2018[, .(clase_ternaria, new_class)], 100)
+
+```
+
+Veamos la distribución de nuestro nuevo target. 
+
+```{r}
+library(ggplot2)
+
+ds201806 <- junio2018[, .N, by = new_class] 
+
+ggplot(ds201806, aes(x=new_class, y=N) ) +
+  geom_bar(stat="identity", fill="blue")
+
+ggplot(ds201806[new_class > 0, ], aes(x=new_class, y=N) ) +
+  geom_bar(stat="identity", fill="blue")  +
+  ggtitle("Sin la gente que no se va")
+
+```
+
+OJO!! Que nuestro target mal usado puede ser MUY PELIGRO, ya que cuenta con información de un futuro más allá de lo que vamos a predecir!! 
+
+Veamos ahora, como hicimos con el `EDA`, el comportamiento de las variables sobre los distintas clases:
+
+
+```{r}
+# Examinada en el EDA
+ggplot(junio2018[new_class < 6, ], aes(x=mcomisiones_mantenimiento)) +
+  facet_grid(new_class ~ .) +
+  ggtitle("mcomisiones_mantenimiento") +
+  geom_density()
+
+```
+
+Y las variables que son importantes para el `XGBoost`
+
+```{r}
+
+ggplot(junio2018[new_class < 6,], aes(x=mcaja_ahorro_Paquete)) +
+  facet_grid(new_class ~ .) +
+  ggtitle("mcaja_ahorro_Paquete") +
+  geom_density()
+
+ggplot(junio2018[new_class < 6,], aes(x=tmovimientos_ultimos90dias)) +
+  facet_grid(new_class ~ .) +
+  ggtitle("tmovimientos_ultimos90dias") +
+  geom_density()
+
+
+ggplot(junio2018[new_class < 6,], aes(x=mpasivos_margen)) +
+  facet_grid(new_class ~ .) +
+  ggtitle("mpasivos_margen") +
+  geom_density()
+
+```
+
+¿Interpretaciones?
+
+Armemos un modelo sobre `201804`, apliquemoslo sobre `201806` y veamos a las clases que capturo:
+
+```{r}
+library(xgboost)
+# Y yo sigo con el XGBoost, debería ir al psicólogo ...
+
+fmodelo.train <- function(data, clase) {
+  dtrain   <- xgb.DMatrix( data = data.matrix(data),  label = clase, missing=NA )
+  xgb.train( 
+    data = dtrain,  
+    missing = NA,
+    nround= 50,
+    maximize =TRUE,
+    objective="binary:logistic",
+    tree_method = "hist",
+    grow_policy="lossguide",
+    verbose = FALSE
+  )
+}
+
+abril2018 <- readRDS("../datasets/dias/201804.RDS")
+setkey(abril2018, numero_de_cliente)
+abril2018 <- merge(abril2018, ds[foto_mes == 201804, .(numero_de_cliente,new_class)], all=FALSE)
+
+clases_201804 <- abril2018[, new_class]
+clases_201804_binaria1 <- ifelse(clases_201804 == 2, 1, 0)
+abril2018[, clase_ternaria := NULL]
+abril2018[, new_class := NULL]
+
+modelo1 <- fmodelo.train(abril2018, clases_201804_binaria1)
+
+clases_201806 <- junio2018[, new_class]
+clases_201806_binaria1 <- ifelse(clases_201806 == 2, 1, 0)
+junio2018[, clase_ternaria := NULL]
+junio2018[, new_class := NULL]
+
+
+junio2018_pred <- predict(modelo1, data.matrix(junio2018),  type = "prob")
+
+junio2018_pred <- data.table(junio2018_pred, clases_201806)
+```
+
+Exploramos que target capturamos cuando elegimos a nuestros clientes:
+
+```{r}
+junio2018_clases <- junio2018_pred[junio2018_pred > 0.025, .N , by=clases_201806]
+
+junio2018_clases
+```
+
+Ordenemos
+```{r}
+setorder(junio2018_clases, clases_201806)
+junio2018_clases
+```
+
+```{r}
+junio2018_clases[, porc := 100 * N / sum(N)]
+junio2018_clases
+```
+
+CHAN! ¿Interpretaciones?
+
+Los escucho!!
+
+Unos más antes de pasar al siguiente punto, y nos vamos en silencio..
+
+```{r}
+
+junio2018_pred[junio2018_pred > 0.025, mean(junio2018_pred) , by=clases_201806]
+
+```
+
+Pero juntemos ya las clases!!! Vamos con la más intuitiva que es juntar las clases `BAJA+1` con ``BAJA+2`.  
+
+```{r}
+
+clases_201804_binaria2 <- ifelse(clases_201804 == 2 | clases_201804 == 1, 1, 0)
+modelo2 <- fmodelo.train(abril2018, clases_201804_binaria2)
+
+clases_201806_binaria2 <- ifelse(clases_201806 == 2 | clases_201806 == 1, 1, 0)
+junio2018_pred2 <- predict(modelo2, data.matrix(junio2018),  type = "prob")
+
+```
+
+Midamos sobre `201806` el `auc` ambos modelos, primero para la clase `BAJA+2` sola:
+
+```{r}
+library(ROCR)
+
+roc_pred1 <-  ROCR::prediction(junio2018_pred[,junio2018_pred],
+                               clases_201806_binaria1,
+                               label.ordering=c( 0, 1))
+unlist(ROCR::performance( roc_pred1,"auc")@y.values)
+```
+
+Y con las clases combinadas:
+
+```{r}
+
+roc_pred2 <-  ROCR::prediction(junio2018_pred2,
+                               clases_201806_binaria2,
+                               label.ordering=c( 0, 1))
+unlist(ROCR::performance( roc_pred2,"auc")@y.values)
+```
+
+Vaya! La `auc` aumenta considerablemente!!. Veamos la ganancia:
+
+```{r}
+
+junio2018_pred[junio2018_pred > 0.025, sum(ifelse(clases_201806 == 2, 19500,-500))  ]
+
+```
+
+```{r}
+junio2018_pred2 <- data.table(junio2018_pred2, clases_201806 )
+junio2018_pred2[junio2018_pred2 > 0.025, sum(ifelse(clases_201806 == 2 | clases_201806 == 2 , 19500,-500))  ]
+```
+
+Genial! Nos sumó!! gráfiquemos las curvas de ganancia:
+
+```{r}
+
+fgain_curve <- function (prob, class, idx) {
+  result <- as.data.table(prob, class)
+  result[, v := ifelse(class == 2, 19500,-500)]
+  result2 <- result[, .(gan = sum(v)), by=prob]
+  setorder(result2,-prob)
+  result2[, ganancia := cumsum(gan)]
+  result2[, gan := NULL]
+  result2[, idx := idx]
+}
+
+draw_gan <- rbindlist(list(
+  fgain_curve(junio2018_pred[,junio2018_pred], clases_201806, "B+2"),
+  fgain_curve(junio2018_pred2[,junio2018_pred2], clases_201806, "B+1+2")
+))
+
+ggplot(draw_gan[prob > 0.005 & prob < 0.1 ,], aes(x=prob,y=ganancia)) +
+    geom_line(aes(colour = idx), size = 1)
+
+```
+
+Epa! La curva de ganancia cambio! Y nuestro punto de corte no es el optimo! ¿Cúal es el muevo punto de corte y cual es su ganancia?
+
+```{r}
+draw_gan[idx == "B+1+2" & ganancia == max(ganancia), ]
+```
+
+Nos dejamos 200k sobre la mesa. Además de todos los parámetros que tenemos que controlar, tenemos que ademas, pensar como elegir el punto de corte.
+
+También observamos que `0.025` tampoco nos da la ganancia máxima sobre `BAJA+2`:
+
+```{r}
+draw_gan[idx == "B+2", ][ganancia == max(ganancia),]
+
+```
+
+
+Manos a la obra:
+
+Nos queda probar muchas cosas!, no podemos seguir escribiendo código de esta manera, armemos las funciones que nos ayuden... Entre todos:
+
+
+```{r}
+
+# TODO: Genere las funciones propuestas en la clase.
+
+```
+
+Utilice estas funciones para probar más escenarios sobre el uso de las clases.
+
+Si sumar información juntando clases me ayuda, por qué no combinar más de un mes? Avance con estas pruebas...

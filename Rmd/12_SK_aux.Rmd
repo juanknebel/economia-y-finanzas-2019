@@ -1,0 +1,378 @@
+---
+title: "Stacking"
+author: "Alejandro Bolaños"
+date: "2019-10-28"
+version: 0.7
+output: 
+  html_document:
+    theme: spacelab
+    highlight: monochrome
+    df_print: paged
+#    toc: true
+#    toc_depth: 2
+
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+El fin de esta notebook es repetir el desarrollo del stacking, utilizando como modelos a ensamblar los mejores LightGBM de una búsqueda de parametros.
+
+Se evitarán la notas innecesarias:
+
+```{r}
+
+rm( list=ls() )
+gc()
+
+library( "data.table" )
+vsemillas <- c(810757,482071,340979,446441,917513)
+
+periodo_delta <- function (foto_mes, delta) {
+  
+  len <-2
+  
+  step_cant <- delta
+  
+  step <- paste0(step_cant, " months")
+  
+  resultado <-  as.integer(strftime(seq(
+    as.Date(paste0(foto_mes, "01"), format = "%Y%m%d"),
+    length = len,
+    by = step
+  ), format = "%Y%m"))
+  
+  return(resultado[2])
+
+  }
+
+periodos_delta_serie <- function (foto_mes, delta) {
+  sapply(0:(delta), periodo_delta, foto_mes=foto_mes)
+}
+
+cargar_meses <- function(foto_mes, diferencia) {
+  dataset_list <- list()
+  clases_vector <- c()
+  
+  for (fm in periodos_delta_serie(foto_mes, diferencia)) {
+    dataset_mes <- readRDS(paste0("../datasets/dias/", fm, ".RDS"))
+
+    clases <- ifelse(dataset_mes[, clase_ternaria] == "BAJA+2", 1, 0)
+    dataset_mes[, clase_ternaria := NULL]
+    dataset_mes[, numero_de_cliente := NULL]
+    dataset_mes[, foto_mes := NULL]
+    
+    dataset_list[[as.character(fm)]] <- dataset_mes
+    clases_vector <- c(clases_vector, clases)
+  }
+  resultado <- list()
+  resultado[["datos"]] <- rbindlist(dataset_list)
+  resultado[["clases"]] <- clases_vector
+  resultado
+}
+
+p201802 <- cargar_meses(201802,0)
+p201804 <- cargar_meses(201804,0)
+
+library(caret)
+
+set.seed(vsemillas[1])
+p201802$folds <- createFolds(p201802$clases, k=5)
+
+library(lightgbm)
+
+modelar_lgbm <- function(ds,
+           target,
+           param = list()) { 
+
+  dtrain_lgm <- lgb.Dataset(data.matrix(ds), label = target)
+
+  params <- c(param, list(objective = "binary"))
+
+  modelo <- lgb.train(params,
+                dtrain_lgm,
+                verbose = -1)
+  modelo
+}
+```
+
+Los párametros de los mejores LightGBM que encontramos:
+
+```{r}
+params <- list()
+params$p1 <-
+  list(
+    num_iterations = 257,
+    init_score = 0.005,
+    bagging_fraction = 1,
+    feature_fraction = 0.865202856837361,
+    learning_rate = 0.0185005865027976,
+    min_data_in_leaf = 91,
+    num_leaves = 27,
+    lambda_l1 = 0.575644090921705,
+    min_gain_to_split = 0.84993475050511,
+    max_bin = 31
+  )
+params$p2 <-
+  list(
+    num_iterations = 676,
+    init_score = 0.005,
+    bagging_fraction = 1,
+    feature_fraction = 0.292985224018664,
+    learning_rate = 0.00496956511769627,
+    min_data_in_leaf = 66,
+    num_leaves = 53,
+    lambda_l1 = 0.202437604577061,
+    min_gain_to_split = 0.480379589371335,
+    max_bin = 31
+  )
+params$p3 <-
+  list(
+    num_iterations = 627,
+    init_score = 0.005,
+    bagging_fraction = 1,
+    feature_fraction = 0.244633899673408,
+    learning_rate = 0.00494044336026601,
+    min_data_in_leaf = 91,
+    num_leaves = 23,
+    lambda_l1 = 0.0222547162180584,
+    min_gain_to_split = 0.32141096605512,
+    max_bin = 31
+  )
+params$p4 <-
+  list(
+    num_iterations = 1057,
+    init_score = 0.005,
+    bagging_fraction = 1,
+    feature_fraction = 0.65506050355367,
+    learning_rate = 0.00508429523133745,
+    min_data_in_leaf = 38,
+    num_leaves = 19,
+    lambda_l1 = 0.338626356271103,
+    min_gain_to_split = 0.351318105781393,
+    max_bin = 31
+  )
+params$p5 <-
+  list(
+    num_iterations = 576,
+    init_score = 0.005,
+    bagging_fraction = 1,
+    feature_fraction = 0.18664510873896,
+    learning_rate = 0.0196079665161993,
+    min_data_in_leaf = 97,
+    num_leaves = 10,
+    lambda_l1 = 0.987411434390967,
+    min_gain_to_split = 0.603977781284193,
+    max_bin = 31
+  )
+
+```
+
+Performance nuestros parámetros:
+
+```{r}
+
+library(ROCR)
+
+metricas <-
+  function (probabilidades,
+            clases,
+            label,
+            punto_corte = 0.025
+            ) {
+    
+    roc <-  ROCR::prediction(probabilidades,
+                             clases,
+                             label.ordering = c(0, 1))
+    auc <- unlist(ROCR::performance(roc, "auc")@y.values)
+    
+    dt_temp <- data.table(probabilidades, clases)
+    
+    dt_temp[, v := ifelse(clases == 1, 19500,-500)]
+    
+    ganancia <-
+      dt_temp[probabilidades > punto_corte, sum(v)]
+    data.table(label = label, ganancia = ganancia, auc = auc)
+  }
+
+resultados <- data.table()
+
+for (i in 1:length(params)) {
+  
+  p_i <- params[[i]]
+  m <- modelar_lgbm(p201802$datos, p201802$clases, param = p_i)
+  p <- predict(m, data.matrix(p201804$datos), type = "prob")
+  
+  
+  resultados <-
+    rbindlist(list(resultados, metricas(p, p201804$clases, paste0("m", i))))
+}
+
+resultados
+```
+
+Armamos nuestro dataset de stacking:
+
+```{r}
+
+meta <- data.table()
+for (i in 1:length(params)) {
+  
+  # Tomamos los parámetros con los que vamos a entrenar el modelo
+  p_i <- params[[i]]
+  
+  for (f in 1:length(p201802$folds)) {
+    
+    train_folds <- c()
+    test_fold <- c()
+    
+    for (j in 1:length(p201802$folds)) {
+      if (f != j)
+        train_folds <- c(train_folds, p201802$folds[[j]])
+      else
+        test_fold <- p201802$folds[[j]]
+    }
+    m <- modelar_lgbm(p201802$datos[train_folds,], 
+                      p201802$clases[train_folds], param = p_i)
+    
+    p <- predict(m, data.matrix(p201802$datos[test_fold,]), type = "prob")
+    test <-
+      data.table(fold = f,
+            test_fold,
+            p,
+            modelo = paste0("m", i))
+    meta <- rbindlist(list(meta, test))
+  }
+}
+
+
+```
+
+```{r, eval=FALSE}
+setorder(meta, test_fold)
+metadata <- dcast(meta, test_fold + fold ~ modelo, value.var = "p")
+metadata$clases <- p201802$clases
+
+# Agregamos algunas variables 
+metadata$mpasivos_margen <- p201802$datos$mpasivos_margen
+metadata$tmovimientos_ultimos90dias <- p201802$datos$tmovimientos_ultimos90dias
+metadata$mtarjeta_visa_consumo <- p201802$datos$mtarjeta_visa_consumo
+metadata$mcaja_ahorro_Paquete <- p201802$datos$mcaja_ahorro_Paquete
+
+saveRDS(metadata, "resultados/12_SK_res2.RDS")
+
+```
+
+```{r}
+
+metadata <- readRDS("resultados/12_SK_res2.RDS")
+
+```
+
+Reemplazaremos el XGB por un LGBM y probamos directamente sobre un  `OOT`.
+
+```{r}
+
+m_lr <-
+  glm(clases ~  m1 + m2 +  m3 +  m4 + m5,
+      family = binomial(link = 'logit'),
+      data = metadata)
+
+# Logística con variables adicionales
+m_lr_w_var <-
+  glm(
+    clases ~  m1 + m2 +  m3 +  m4 + m5 +
+      mpasivos_margen + tmovimientos_ultimos90dias +
+      mtarjeta_visa_consumo + mcaja_ahorro_Paquete,
+    family = binomial(link = 'logit'),
+    data = metadata
+  )
+
+m_dt <-
+  modelar_lgbm(metadata[, c("m1", "m2", "m3", "m4", "m5"),
+                        with = FALSE],
+               metadata[, clases])
+
+# Árbol con variables adicionales
+m_dt_w_var <-
+  modelar_lgbm(metadata[, c(
+    "m1",
+    "m2",
+    "m3",
+    "m4",
+    "m5",
+    "mpasivos_margen",
+    "tmovimientos_ultimos90dias",
+    "mtarjeta_visa_consumo" ,
+    "mcaja_ahorro_Paquete"
+  ), with = FALSE],
+  metadata[, clases])
+
+meta_oot <- p201804$datos[, c(
+  "mpasivos_margen",
+  "tmovimientos_ultimos90dias",
+  "mtarjeta_visa_consumo" ,
+  "mcaja_ahorro_Paquete"
+), with = FALSE]
+meta_oot$clases <- p201804$clases
+
+for (i in 1:5) {
+  m <- modelar_lgbm(p201802$datos, p201802$clases, param = params[[i]])
+  p <- predict(m, data.matrix(p201804$datos), type = "prob")
+  meta_oot[[paste0("m",i)]] <- p
+ 
+}
+
+meta_oot$m_lr <- predict(m_lr, meta_oot, type = "response")
+  
+meta_oot$m_lr_w_var <-
+    predict(m_lr_w_var, meta_oot, type = "response")
+  
+meta_oot$m_dt <-
+    predict(m_dt, data.matrix(meta_oot[, c("m1", "m2", "m3", "m4", "m5"),
+                                       with = FALSE]), type = "prob")
+  
+meta_oot$m_dt_w_var <-
+    predict(m_dt_w_var, data.matrix(meta_oot[, c(
+      "m1", "m2", "m3", "m4", "m5",
+      "mpasivos_margen",
+      "tmovimientos_ultimos90dias",
+      "mtarjeta_visa_consumo" ,
+      "mcaja_ahorro_Paquete"
+    ), with = FALSE]), type = "prob")
+
+```
+
+Medimos en nuestro `OOT` todos los modelos:
+
+```{r}
+
+rbindlist(list(
+  metricas(meta_oot$m1, meta_oot$clases, "m1" ),
+  metricas(meta_oot$m2, meta_oot$clases, "m2" ),
+  metricas(meta_oot$m3, meta_oot$clases, "m3" ),
+  metricas(meta_oot$m4, meta_oot$clases, "m4" ),
+  metricas(meta_oot$m5, meta_oot$clases, "m5" ),
+  metricas(meta_oot$m_lr, meta_oot$clases, "m_lr" ),
+  metricas(meta_oot$m_lr_w_var, meta_oot$clases, "m_lr_w_var" ),
+  metricas(meta_oot$m_dt, meta_oot$clases, "m_dt" ),
+  metricas(meta_oot$m_dt_w_var, meta_oot$clases, "m_dt_w_var" )
+)) 
+
+```
+
+CHAN! ¿Qué paso?
+
+Observemos un pequeño detalle:
+
+```{r}
+
+cor(meta_oot[,c("m1","m2","m3","m4","m5"), with=FALSE], method = 'spearman')
+
+```
+
+Todos los modelos son casi lo mismo. O sea, es como si estuvieramos entrenando con 1 variable o dos. No está tan mal si lo miramos desde ese punto de vista. 
+
+Esto no significa descartar la técnica, ya vimos que en otros escenarios aporta valor. 
+
+Simplemente entender que la técnica tiene que respetar los mismos principios que vimos para el resto de las clases. 

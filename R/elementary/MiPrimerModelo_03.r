@@ -104,9 +104,13 @@ modelo_rpart_uno = function(psemilla, pmaxdepth, pminbucket, pminsplit, pcp)
   # calculo el AUC en testing
   auc <- fmetrica_auc_rpart(testing_prediccion[ ,kclase_valor_positivo],  dataset_testing[ , get(kclase_nomcampo)])
 
+  #cuento cuantas variables canarito distintas aparecen
+  frame  <- modelo$frame
+  leaves <- frame$var == "<leaf>"
+  used   <- unique(frame$var[!leaves])
+  canaritos_muertos <- sum( unlist( used ) %like% "canarito" )
 
-
-  return( list("semilla"=psemilla, "ganancia"=gan,  "tiempo"= tiempo,  "auc"=auc) )
+  return( list("semilla"=psemilla, "ganancia"=gan,  "tiempo"= tiempo,  "auc"=auc, "canaritos_muertos"=  canaritos_muertos  ))
 
 }
 
@@ -133,20 +137,52 @@ dataset <- fread(karchivo_entrada, header=TRUE, sep=kcampos_separador)
 dataset[ ,  (kcampos_a_borrar) := NULL    ] 
 
 
+#Canaritos --------------------------------------------------------------------
+#agrego los canaritos, variable random que no puede estar correlacionada con nada
+#si aparece canarito en el arbol, entonces rpart esta viendo estructura donde NO LA HAY !!
+
+magic_canaritos <- 0.10   
+canaritos_cantidad <- as.integer( round(ncol(dataset) * magic_canaritos) )
+for( i in 1:canaritos_cantidad )
+{
+  dataset[  , paste0( "canarito", i ) :=  runif( nrow(dataset) ) ]
+}
+
+#El objetivo de la tesis es que el arbol NO PARTICIONE un nodo si la mejor variable es un canarito 
+#esto se hara extensible a Gradient Boosting
+#--------------------------------------
+
+
 res1  <-  modelo_rpart_ganancia(dataset, pmaxdepth=4, pminbucket=5, pminsplit=20, pcp=0 )
-cat( "ganancia_promedio:", mean(res1$ganancia),  "\t",  "AUC_promedio:", mean(res1$auc),  "\n") 
+cat( "ganancia_promedio:", mean(res1$ganancia),  "\t",  "AUC_promedio:", mean(res1$auc), "\t", "canaritos_muertos_promedio:", mean(res1$canaritos_muertos), "\n") 
 
 res2  <-  modelo_rpart_ganancia(dataset, pmaxdepth=8, pminbucket=5, pminsplit=20, pcp=0 )
-cat( "ganancia_promedio:", mean(res2$ganancia),  "\t",  "AUC_promedio:", mean(res2$auc),  "\n") 
+cat( "ganancia_promedio:", mean(res2$ganancia),  "\t",  "AUC_promedio:", mean(res2$auc), "\t", "canaritos_muertos_promedio:", mean(res2$canaritos_muertos), "\n") 
 
-res3  <-  modelo_rpart_ganancia(dataset, pmaxdepth=10, pminbucket=5, pminsplit=20, pcp=0 )
-cat( "ganancia_promedio:", mean(res3$ganancia),  "\t",  "AUC_promedio:", mean(res3$auc),  "\n") 
+res3  <-  modelo_rpart_ganancia(dataset, pmaxdepth=8, pminbucket=5, pminsplit=20, pcp=0.001 )
+cat( "ganancia_promedio:", mean(res3$ganancia),  "\t",  "AUC_promedio:", mean(res3$auc), "\t", "canaritos_muertos_promedio:", mean(res3$canaritos_muertos), "\n") 
 
-res4  <-  modelo_rpart_ganancia(dataset, pmaxdepth=12, pminbucket=5, pminsplit=20, pcp=0 )
-cat( "ganancia_promedio:", mean(res4$ganancia),  "\t",  "AUC_promedio:", mean(res4$auc),  "\n") 
 
-res5  <-  modelo_rpart_ganancia(dataset, pmaxdepth=14, pminbucket=5, pminsplit=20, pcp=0 )
-cat( "ganancia_promedio:", mean(res5$ganancia),  "\t",  "AUC_promedio:", mean(res5$auc),  "\n") 
+res4  <-  modelo_rpart_ganancia(dataset, pmaxdepth=10, pminbucket=5, pminsplit=20, pcp=0 )
+cat( "ganancia_promedio:", mean(res4$ganancia),  "\t",  "AUC_promedio:", mean(res4$auc), "\t", "canaritos_muertos_promedio:", mean(res4$canaritos_muertos), "\n") 
+
+res5  <-  modelo_rpart_ganancia(dataset, pmaxdepth=12, pminbucket=5, pminsplit=20, pcp=0 )
+cat( "ganancia_promedio:", mean(res5$ganancia),  "\t",  "AUC_promedio:", mean(res5$auc), "\t", "canaritos_muertos_promedio:", mean(res5$canaritos_muertos), "\n") 
+
+res6  <-  modelo_rpart_ganancia(dataset, pmaxdepth=14, pminbucket=5, pminsplit=20, pcp=0 )
+cat( "ganancia_promedio:", mean(res6$ganancia),  "\t",  "AUC_promedio:", mean(res6$auc), "\t", "canaritos_muertos_promedio:", mean(res6$canaritos_muertos), "\n") 
+
+res7  <-  modelo_rpart_ganancia(dataset, pmaxdepth=23, pminbucket=11, pminsplit=24, pcp=-0.000891174876020549 )
+cat( "ganancia_promedio:", mean(res7$ganancia),  "\t",  "AUC_promedio:", mean(res7$auc), "\t", "canaritos_muertos_promedio:", mean(res7$canaritos_muertos), "\n") 
+
 
 #Por favor notar la gran variabilidad que hay en la ganancia al generar el arbol con distintos parametros
 #Cuales seran los parametros que optimizan la ganancia para rpart en este dataset ?
+
+
+for(  vpcp in  c( 0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00005, 0.00001 ) )
+{
+  res  <-  modelo_rpart_ganancia(dataset, pmaxdepth=20, pminbucket=5, pminsplit=20, pcp=vpcp )
+  cat( "pcp:",  vpcp, "ganancia_promedio:", mean(res$ganancia),  "\t",  "AUC_promedio:", mean(res$auc), "\t", "canaritos_muertos_promedio:", mean(res$canaritos_muertos), "\n") 
+}
+
