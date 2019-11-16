@@ -41,5 +41,9 @@ rsconnect/
 
 # Large Datasets
 datasets/201902.txt
+datasets/dias/201902_dias.txt
 datasets/201904.txt
+datasets/dias/201904_dias.txt
+datasets/paquete_premium_dias_1ano.txt
 datasetsOri/paquete_premium.txt
+datasetsOri/paquete_premium.zip
