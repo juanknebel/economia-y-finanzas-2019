@@ -20,6 +20,7 @@ sudo apt-get --yes install cron
 
 sudo apt-get --yes install nano
 sudo apt-get --yes install tmux
+sudo apt-get --yes install htop
 
 
 

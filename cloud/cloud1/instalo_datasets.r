@@ -110,7 +110,7 @@ dir.create( "dias" )
 lapply(  fotos_distintas,  fguardar_foto,  pprefijo="./dias/",  psufijo="_dias.txt",  pdataset=dataset ) 
 
 #grabo el archivo completo
-setwd( kdirectory_datasets_bucket )
+setwd( kdirectory_datasets_bucketOri )
 fwrite( dataset,  file="paquete_premium_dias.txt", sep=kcampos_separador, na="", row.names=FALSE, nThread=1) 
 
 
