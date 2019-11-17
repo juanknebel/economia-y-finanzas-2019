@@ -19,6 +19,7 @@ sudo apt-get --yes install ocl-icd-opencl-dev
 sudo apt-get --yes install cron
 
 sudo apt-get --yes install nano
+sudo apt-get --yes install tmux
 
 
 
