@@ -334,7 +334,7 @@ modelo_lightgbm_valid = function( ptrain, x  )
                      valids= list( valid= dactual_validacion),
                      metric= "auc",
                      eval = fganancia_logistic_actual,
-                     seed= 102191,
+                     seed= 209743,
                      early_stopping_round = 30,
                      num_iterations= 500,
                      boost_from_average= TRUE,
@@ -373,7 +373,7 @@ modelo_lightgbm_puro = function( ptrain, x, piteracion  )
                      data= dfuturo_train,
                      objective= "binary",
                      eval = fganancia_logistic_actual,
-                     seed= 102191,
+                     seed= 209743,
                      num_iterations= piteracion,
                      boost_from_average= TRUE,
                      bagging_fraction= 1, 
@@ -470,7 +470,7 @@ agregar_canaritos <- function( pdataset, pcanaritos_idx )
   vcanaritos <-  paste0( "canarito", 1:canaritos_cantidad )
 
   #uso esta semilla para los canaritos
-  set.seed(10217)
+  set.seed(209789)
 
   #podria haber hecho un loop for
   pdataset[ , (vcanaritos) := 0 ]
