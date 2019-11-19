@@ -47,3 +47,5 @@ datasets/dias/201904_dias.txt
 datasets/paquete_premium_dias_1ano.txt
 datasetsOri/paquete_premium.txt
 datasetsOri/paquete_premium.zip
+
+cloud/privatekey_inicial.json

@@ -37,7 +37,7 @@ switch (Sys.info()[['sysname']],
 env$directory <- directory
 
 
-env$experimento          <-  3502
+env$experimento          <-  3501
 
 env$undersampling        <-  0.10
 
@@ -49,7 +49,7 @@ data$campo_id             <-  "numero_de_cliente"
 data$clase_nomcampo       <-  "clase_ternaria"
 data$clase_valor_positivo <-  "BAJA+2"
 data$campos_a_borrar      <-  c()
-data$archivo_grande       <-  "paquete_premium_exthist.txt.gz"
+data$archivo_grande       <-  "paquete_premium_dias.txt"
 data$mes_futuro_test      <-  1 + 2
 data$mes_futuro_train     <-  1 + 2 + 2
 data$mes_actual_test      <-  1 + 2 + 2
@@ -70,7 +70,7 @@ env$mbo <- mbo
 #sobre el funcionamiento de programa
 #en el XGboost
 xgb <- list()
-xgb$semilla               <- 209743
+xgb$semilla               <- 102191
 xgb$max_bin               <-     31
 xgb$subsample             <-      1.0
 xgb$nround_max            <-   1000
@@ -563,7 +563,7 @@ agregar_canaritos <- function( pdataset,  pcanaritos_cantidad )
 
 #cargo los archivos de entrada
 setwd( env$directory$datasets)
-dataset_grande   <- fread(env$data$archivo_grande)
+dataset_grande   <- fread(cmd=paste("cat", env$data$archivo_grande))
 
 dataset_grande <- dataset_grande[ foto_mes>=env$data$mes_primero  & foto_mes<=env$data$mes_ultimo, ]
 gc()
