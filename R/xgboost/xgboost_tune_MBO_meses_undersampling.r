@@ -1,8 +1,5 @@
-#En construccion
-#aun no funciona
-
-#modelo LightGBM
-#la cantidad optima de arboles de LightGBM se estima con Early Stopping
+#modelo XGBoost
+#la cantidad optima de arboles de XGBoost se estima con Early Stopping
 
 
 #limpio la memoria
@@ -12,7 +9,8 @@ gc()
 
 library("data.table")
 library("ROCR")
-library("lightgbm")
+library("Matrix")
+library("xgboost")
 
 library("DiceKriging")
 library("mlrMBO")
@@ -39,7 +37,7 @@ switch (Sys.info()[['sysname']],
 env$directory <- directory
 
 
-env$experimento          <-  4667
+env$experimento          <-  3501
 
 env$undersampling        <-  0.10
 
@@ -70,19 +68,14 @@ mbo$archivo_trabajo   <-  paste("exp_", env$experimento, ".RDATA", sep="")
 env$mbo <- mbo
 
 #sobre el funcionamiento de programa
-#en el lightgbm
-lgb <- list()
-lgb$semilla                 <- 102191
-lgb$max_bin                 <-    255
-lgb$subsample               <-      1.0
-lgb$num_iterations_max      <-   1000
-lgb$early_stopping_round    <-     30
-lgb$num_leaves              <-   1024
-lgb$max_depth               <-     -1
-lgb$min_data_in_leaf        <-      1
-lgb$min_gain_to_split       <-      0
-lgb$min_sum_hessian_in_leaf <-      0.0
-env$lightgbm <- lgb
+#en el XGboost
+xgb <- list()
+xgb$semilla               <- 209743
+xgb$max_bin               <-     31
+xgb$subsample             <-      1.0
+xgb$nround_max            <-   1000
+xgb$nround_early_stopping <-     60
+env$xgboost <- xgb
 
 
 
@@ -95,8 +88,8 @@ hiper$arch_imagen    <-  paste( "exp_", env$experimento, ".jpg", sep="" )
 hiper$arch_over      <-  paste( "exp_", env$experimento, "_over.jpg", sep="" )
 hiper$directory      <-  env$directory_work
 hiper$clase_tipo     <-  "binaria1"
-hiper$programa       <-  "lightgbm_tune_MBO_meses_undersampling.r"
-hiper$algoritmo      <-  "lightgbm"
+hiper$programa       <-  "xgboost_tune_MBO_meses_undersampling.r"
+hiper$algoritmo      <-  "xgboost"
 hiper$busqueda       <-  "MBO"
 hiper$estimacion     <-  "mes_futuro"
 hiper$observaciones  <-  "ventana_undersampling_10%"
@@ -313,7 +306,7 @@ fmetrica_ganancia  <- function( probs, clases, pclase_valor_positivo, problema )
 #Esta funcion calcula AUC  Area Under Curve  de la Curva ROC
 #Esta funcion calcula AUC  Area Under Curve  de la Curva ROC
 
-fmetrica_auc_lightgbm  = function( probs, clases )
+fmetrica_auc_xgboost  = function( probs, clases )
 {
   pred             <-  ROCR::prediction(  probs, clases, label.ordering=c( 0, 1))
   auc_testing      <-  ROCR::performance( pred,"auc") 
@@ -323,7 +316,7 @@ fmetrica_auc_lightgbm  = function( probs, clases )
 }
 #------------------------------------------------------------------------------
 
-fganancia_logistic_lightgbm   <- function(probs, clases) 
+fganancia_logistic_xgboost   <- function(probs, clases) 
 {
 
    vlabels <- getinfo(clases, "label")
@@ -333,154 +326,158 @@ fganancia_logistic_lightgbm   <- function(probs, clases)
             )
         
 
-   return(  list(name = "ganancia", value =  ifelse(  is.na(gan) , 0, gan), higher_better= TRUE )  )
+   return(  list(metric = "ganancia", value =  ifelse(  is.na(gan) , 0, gan ) )  )
 }
 #------------------------------------------------------------------------------
 
-modelo_lightgbm_actual <- function( ptrain, ptest, ptest_clase, pclase_nomcampo, pclase_valor_positivo, pproblema, 
-                                   pfeature_fraction, plearning_rate, plambda_l1, plambda_l2 )
+modelo_xgboost_actual <- function( ptrain, ptest, pclase_nomcampo, pclase_valor_positivo, pproblema, 
+                                   pcolsample_bytree, peta, palpha, plambda, pgamma, pmin_child_weight, pmax_depth )
 {
 
-  #La gran llamada a  LightGBM
-  modelo = lgb.train( 
+  #La gran llamada a  XGBoost
+  modelo = xgb.train( 
                       data = ptrain,  
-                      objective="binary",
-                      valids= list( valid=ptest),
-                      eval = fganancia_logistic_lightgbm, 
-                      metric = "auc" ,
-                      num_leaves= env$lightgbm$num_leaves,
-                      num_iterations= env$lightgbm$num_iterations_max,
-                      early_stopping_rounds= env$lightgbm$early_stopping_round,
-                      max_bin = env$lightgbm$max_bin,
-                      boost_from_average= TRUE ,
-                      subsample = env$lightgbm$subsample, 
-                      feature_fraction = pfeature_fraction, 
-                      learning_rate = plearning_rate,
-                      min_data_in_leaf = env$lightgbm$min_data_in_leaf, 
-                      max_depth = env$lightgbm$max_depth,
-                      lambda_l1 = plambda_l1, lambda_l2 = plambda_l2, 
-                      min_gain_to_split = env$lightgbm$min_gain_to_split,
-                      min_sum_hessian_in_leaf= env$lightgbm$min_sum_hessian_in_leaf,
-                      first_metric_only=TRUE,
-                      verbosity= 2,
-                      num_canaritos= 34
+                      missing = NA,
+                      objective="binary:logistic",
+                      watchlist = list( train=ptrain, test=ptest ),
+                      feval = fganancia_logistic_xgboost,  maximize= TRUE, 
+                      nround= env$xgboost$nround_max,
+                      early_stopping_rounds= env$xgboost$nround_early_stopping,
+                      tree_method = "hist",
+                      max_bin = env$xgboost$max_bin,
+                      base_score = mean( getinfo(ptrain, "label") ) ,
+                      subsample = env$xgboost$subsample, 
+                      colsample_bytree = pcolsample_bytree, 
+                      eta = peta,
+                      min_child_weight = pmin_child_weight, 
+                      max_depth = pmax_depth,
+                      alpha = palpha, lambda = plambda, gamma = pgamma,
                      )
                      
-  iteracion_max      <- which.max( unlist(modelo$record_evals$valid$ganancia$eval) )
-  ganancia           <- unlist(modelo$record_evals$valid$ganancia$eval)[ iteracion_max ] 
+                     
+  iteracion_max      <- which.max( unlist(modelo$evaluation_log[ , test_ganancia]) )
+  ganancia           <- unlist( modelo$evaluation_log[ , test_ganancia] )[ iteracion_max ] 
   
-  auc                <- unlist(modelo$record_evals$valid$auc$eval)[ iteracion_max ] 
-  
-  tb_importancia     <-  as.data.table( lgb.importance(  modelo) )
+  #aplico el modelo a datos nuevos
+  testing_prediccion  <- predict( modelo, ptest)
+
+  # calculo el AUC
+  auc <-  fmetrica_auc_xgboost( testing_prediccion,  getinfo(ptest, "label") ) 
+
+  tb_importancia <-  as.data.table( xgb.importance( dimnames(ptrain)[[2]], modelo, trees=0:(iteracion_max-1) ) )
 
   vcanaritos_muertos <-  sum( tb_importancia$Feature %like% "canarito" )
 
   return( list("ganancia_test"=ganancia, 
                "auc_test"=auc, 
                "canaritos_muertos"=  vcanaritos_muertos, 
-               "num_iterations"= iteracion_max,
+               "nround"= iteracion_max,
                "importancia"=tb_importancia ) )
 }
 #------------------------------------------------------------------------------
 
-modelo_lightgbm_futuro <- function( ptrain, ptest, ptest_clase, pclase_nomcampo, pclase_valor_positivo, pproblema, 
-                                   pfeature_fraction, plearning_rate, plambda_l1, plambda_l2, pnum_iterations )
+modelo_xgboost_futuro <- function( ptrain, ptest, pclase_nomcampo, pclase_valor_positivo, pproblema, 
+                                   pcolsample_bytree, peta, palpha, plambda, pgamma, pmin_child_weight, pmax_depth, pnround )
 {
 
-  #La gran llamada a  LightGBM
-  modelo = lgb.train( 
+  #La gran llamada a  XGBoost
+  modelo = xgb.train( 
                       data = ptrain,  
-                      objective="binary",
-                      valids= list( valid=ptest),
-                      eval = fganancia_logistic_lightgbm,
-                      metric = "auc" ,
-                      num_leaves= env$lightgbm$num_leaves,
-                      num_iterations= pnum_iterations,
-                      max_bin = env$lightgbm$max_bin,
-                      boost_from_average= TRUE ,
-                      subsample = env$lightgbm$subsample, 
-                      feature_fraction = pfeature_fraction, 
-                      learning_rate = plearning_rate,
-                      min_data_in_leaf = env$lightgbm$min_data_in_leaf, 
-                      max_depth = env$lightgbm$max_depth,
-                      lambda_l1 = plambda_l1, lambda_l2 = plambda_l2, 
-                      min_gain_to_split = env$lightgbm$min_gain_to_split,
-                      min_sum_hessian_in_leaf= env$lightgbm$min_sum_hessian_in_leaf,
-                      num_canaritos= 34
+                      missing = NA,
+                      objective="binary:logistic",
+                      watchlist = list( train=ptrain, test=ptest ),
+                      feval = fganancia_logistic_xgboost,  maximize= TRUE, 
+                      nround= pnround,
+                      tree_method = "hist",
+                      max_bin = env$xgboost$max_bin,
+                      base_score = mean( getinfo(ptrain, "label") ) ,
+                      subsample = env$xgboost$subsample, 
+                      colsample_bytree = pcolsample_bytree, 
+                      eta = peta,
+                      min_child_weight = pmin_child_weight, 
+                      max_depth = pmax_depth,
+                      alpha = palpha, lambda = plambda, gamma = pgamma,
                      )
                      
                      
-  iteracion_max      <- pnum_iterations
-  ganancia           <- unlist(modelo$record_evals$valid$ganancia$eval)[ iteracion_max ] 
+  iteracion_max      <- pnround
+  ganancia           <- unlist( modelo$evaluation_log[ , test_ganancia] )[ iteracion_max ] 
   
-  auc                <- unlist(modelo$record_evals$valid$auc$eval)[ iteracion_max ] 
-  
-  tb_importancia     <-  as.data.table( lgb.importance(  modelo) )
+  #aplico el modelo a datos nuevos
+  testing_prediccion  <- predict( modelo, ptest)
+
+  # calculo el AUC
+  auc <-  fmetrica_auc_xgboost( testing_prediccion,  getinfo(ptest, "label") ) 
+
+  tb_importancia <-  as.data.table( xgb.importance( dimnames(ptrain)[[2]], modelo, trees=0:(iteracion_max-1) ) )
 
   vcanaritos_muertos <-  sum( tb_importancia$Feature %like% "canarito" )
 
   return( list("ganancia_test"=ganancia, 
                "auc_test"=auc, 
                "canaritos_muertos"=  vcanaritos_muertos, 
-               "num_iterations"= iteracion_max,
+               "nround"= iteracion_max,
                "importancia"=tb_importancia ) )
 }
 #------------------------------------------------------------------------------
-x <- list( pventana=12, pfeature_fraction=0.7, plearning_rate=0.1, plambda_l1=0.1, plambda_l2=3.0, pmin_gain_to_split=5, pmin_data_in_leaf=10, pmax_depth=20, pnum_iterations=100)
 
 glob_ganancia_mejor <- 0
-glob_num_iterations_mejor   <- 0
+glob_nround_mejor   <- 0
 
-modelo_lightgbm_ganancia_MBO_directo <- function( x )
+modelo_xgboost_ganancia_MBO_directo <- function( x )
 {
   gc()
   t0   <-  Sys.time()
 
   
-  dactual_train <-   lgb.Dataset( data  = as.matrix(dataset_grande[ (sample < env$undersampling | clase_ternaria==1) & mes<=(env$data$mes_actual_train+x$pventana-1)  &  mes>=env$data$mes_actual_train & mes!=env$data$mes_actual_test, 
-                                                           !c("sample",env$data$campo_id, env$data$clase_nomcampo), 
-                                                           with=FALSE]),
+  dactual_train <-   xgb.DMatrix( data  = data.matrix( dataset_grande[ (sample < env$undersampling | clase_ternaria==1) & mes<=(env$data$mes_actual_train+x$pventana-1)  &  mes>=env$data$mes_actual_train & mes!=env$data$mes_actual_test, 
+                                                                       !c("sample",env$data$campo_id, env$data$clase_nomcampo), 
+                                                                       with=FALSE]),
                                   label = dataset_grande[ (sample < env$undersampling | clase_ternaria==1) & mes<=(env$data$mes_actual_train+x$pventana-1)  &  mes>=env$data$mes_actual_train & mes!=env$data$mes_actual_test,
                                                           get(  env$data$clase_nomcampo) ] ,
-                                  free_raw_data=FALSE
+                                  missing=NA 
                                 )
 
-  mactual  <- modelo_lightgbm_actual(
+  mactual  <- modelo_xgboost_actual(
                              dactual_train,  
                              dactual_test, 
-                             dactual_test_clase, 
                              env$data$clase_nomcampo, 
                              env$data$clase_valor_positivo, 
                              env$problema, 
-                             pfeature_fraction= x$pfeature_fraction,  
-                             plearning_rate= x$plearning_rate, 
-                             plambda_l1= x$plambda_l1,
-                             plambda_l2= x$plambda_l2
+                             pcolsample_bytree= x$pcolsample_bytree,  
+                             peta= x$peta, 
+                             palpha= x$palpha,
+                             plambda= x$plambda,
+                             pgamma= x$pgamma,
+                             pmin_child_weight= x$pmin_child_weight,
+                             pmax_depth= x$pmax_depth
                             )
 
 
 
-  dfuturo_train <-   lgb.Dataset( data  = as.matrix(dataset_grande[(sample < env$undersampling | clase_ternaria==1) & mes<=(env$data$mes_futuro_train+x$pventana-1)  &  mes>=env$data$mes_futuro_train & mes!=env$data$mes_futuro_test,
-                                                         !c("sample",env$data$campo_id, env$data$clase_nomcampo), 
-                                                         with=FALSE]),
+  dfuturo_train <-   xgb.DMatrix( data  = data.matrix(   dataset_grande[(sample < env$undersampling | clase_ternaria==1) & mes<=(env$data$mes_futuro_train+x$pventana-1)  &  mes>=env$data$mes_futuro_train & mes!=env$data$mes_futuro_test,
+                                                                       !c("sample",env$data$campo_id, env$data$clase_nomcampo), 
+                                                                       with=FALSE]),
                                   label = dataset_grande[ (sample < env$undersampling | clase_ternaria==1) & mes<=(env$data$mes_futuro_train+x$pventana-1)  &  mes>=env$data$mes_futuro_train & mes!=env$data$mes_futuro_test,
                                                           get(  env$data$clase_nomcampo) ] ,
-                                  free_raw_data=FALSE
+                                  missing=NA 
                                 )
 
 
-  mfuturo  <- modelo_lightgbm_futuro(
+  mfuturo  <- modelo_xgboost_futuro(
                              dfuturo_train,  
                              dfuturo_test, 
-                             dfuturo_test_clase, 
                              env$data$clase_nomcampo, 
                              env$data$clase_valor_positivo, 
                              env$problema, 
-                             pfeature_fraction= x$pfeature_fraction,  
-                             plearning_rate= x$plearning_rate, 
-                             plambda_l1= x$plambda_l1,
-                             plambda_l2= x$plambda_l2,
-                             pnum_iterations= mactual$num_iterations                             
+                             pcolsample_bytree= x$pcolsample_bytree,  
+                             peta= x$peta, 
+                             palpha= x$palpha,
+                             plambda= x$plambda,
+                             pgamma= x$pgamma,
+                             pmin_child_weight= x$pmin_child_weight,
+                             pmax_depth= x$pmax_depth,
+                             pnround= mactual$nround                             
                             )
 
 
@@ -495,16 +492,16 @@ modelo_lightgbm_ganancia_MBO_directo <- function( x )
 
   #genero el string con los parametros
   st_parametros = paste("ventana=", x$pventana,                   ", ",
-                        "num_iterations=",  mactual$num_iterations,                ", ",
-                        "learning_rate=",    x$plearning_rate,              ", ",
-                        "lambda_l1=",        x$plambda_l1,            ", ",
-                        "lambda_l2=",        x$plambda_l2,           ", ",
-                        "min_gain_to_split=",env$lightgbm$min_gain_to_split,            ", ",
-                        "min_data_in_leaf=", env$lightgbm$min_data_in_leaf, ", ",
-                        "max_depth=",        env$lightgbm$max_depth,        ", ",
-                        "feature_fraction=", x$pfeature_fraction, ", ",
-                        "max_bin=",          env$lightgbm$max_bin, ", ",
-                        "subsample=",        env$lightgbm$subsample,
+                        "nround=",  mactual$nround,                ", ",
+                        "eta=",              x$peta,              ", ",
+                        "alpha=",            x$palpha,            ", ",
+                        "lambda=",           x$plambda,           ", ",
+                        "gamma=",            x$pgamma,            ", ",
+                        "min_child_weight=", x$pmin_child_weight, ", ",
+                        "max_depth=",        x$pmax_depth,        ", ",
+                        "colsample_bytree=", x$pcolsample_bytree, ", ",
+                        "max_bin=",          env$xgboost$max_bin, ", ",
+                        "subsample=",        env$xgboost$subsample,
                         sep = ""
                        )
 
@@ -532,7 +529,7 @@ modelo_lightgbm_ganancia_MBO_directo <- function( x )
   if( mactual$ganancia_test >  glob_ganancia_mejor )
   {
     glob_ganancia_mejor  <<- mactual$ganancia_test
-    glob_num_iterations_mejor    <<- mactual$num_iterations
+    glob_nround_mejor    <<- mactual$nround
     
     setwd( env$directory$work )
     fwrite(  mactual$importancia,
@@ -552,7 +549,7 @@ agregar_canaritos <- function( pdataset,  pcanaritos_cantidad )
   vcanaritos <-  paste0( "canarito", 1:pcanaritos_cantidad )
 
   #uso esta semilla para los canaritos
-  set.seed(10219)
+  set.seed(209789)
 
   pdataset[ , (vcanaritos) := 0 ]
   pdataset[ , (vcanaritos) := lapply(.SD, runif), .SDcols = vcanaritos]
@@ -574,7 +571,7 @@ gc()
 #Borro campos
 if( length(env$data$campos_a_borrar)>0 )  dataset_grande[ ,  (env$data$campos_a_borrar) := NULL    ] 
 
-set.seed(410551)
+set.seed(209743)
 #agrego variable para el undersampling
 dataset_grande[ ,  sample :=  runif( nrow(dataset_grande) )]
 
@@ -595,19 +592,17 @@ dataset_grande[  tbl,  on="foto_mes",  mes:= i.mes ]
 dataset_grande[, (env$data$clase_nomcampo) := as.numeric( get(env$data$clase_nomcampo) == env$data$clase_valor_positivo  )] 
 
 
-#genero el formato requerido por LightGBM los datasets de testing
+#genero el formato requerido por XGBoost los datasets de testing
 #ya que son siempre los mismos independientemente del tamano de la ventana
 
-
-
-dactual_test  <-   lgb.Dataset( data  = as.matrix(dataset_grande[mes==env$data$mes_actual_test, !c("sample",env$data$campo_id, env$data$clase_nomcampo), with=FALSE]),
-                                label = dataset_grande[ mes==env$data$mes_actual_test, get(env$data$clase_nomcampo)],
-                                free_raw_data=FALSE
+dactual_test  <-   xgb.DMatrix( data  = data.matrix( dataset_grande[mes==env$data$mes_actual_test, !c("sample",env$data$campo_id, env$data$clase_nomcampo), with=FALSE]),
+                                label = dataset_grande[ mes==env$data$mes_actual_test, get(env$data$clase_nomcampo)], 
+                                missing=NA 
                               )
 
-dfuturo_test  <-   lgb.Dataset( data  = as.matrix(dataset_grande[mes==env$data$mes_futuro_test, !c("sample",env$data$campo_id, env$data$clase_nomcampo), with=FALSE]),
-                                label = dataset_grande[ mes==env$data$mes_futuro_test, get(env$data$clase_nomcampo)],
-                                free_raw_data=FALSE
+dfuturo_test  <-   xgb.DMatrix( data  = data.matrix( dataset_grande[mes==env$data$mes_futuro_test, !c("sample",env$data$campo_id, env$data$clase_nomcampo), with=FALSE]),
+                                label = dataset_grande[ mes==env$data$mes_futuro_test, get(env$data$clase_nomcampo)], 
+                                missing=NA 
                               )
 
 
@@ -616,17 +611,20 @@ hiperparametros_crear(env$hiper)
 
 configureMlr(show.learner.output = FALSE)
 
-funcion_optimizar <-  modelo_lightgbm_ganancia_MBO_directo
+funcion_optimizar <-  modelo_xgboost_ganancia_MBO_directo
 
 #configuro la busqueda bayesiana,  los hiperparametros que se van a optimizar
 obj.fun <- makeSingleObjectiveFunction(
         name = "prueba",
         fn   = funcion_optimizar,
         par.set = makeParamSet(
-            makeNumericParam("pfeature_fraction" ,  lower=0.05    , upper=   1.0),
-            makeNumericParam("plearning_rate"    ,  lower=0.0     , upper=   0.3),
-            makeNumericParam("plambda_l1"        ,  lower=0.0     , upper=  50.0),
-            makeNumericParam("plambda_l2"        ,  lower=0.0     , upper=  50.0),
+            makeNumericParam("pcolsample_bytree" ,  lower=0.05    , upper=   1.0),
+            makeNumericParam("peta"              ,  lower=0.0     , upper=   0.3),
+            makeNumericParam("palpha"            ,  lower=0.0     , upper=  50.0),
+            makeNumericParam("plambda"           ,  lower=0.0     , upper=  50.0),
+            makeNumericParam("pgamma"            ,  lower=0.0     , upper=  20.0),
+            makeNumericParam("pmin_child_weight" ,  lower=0.0     , upper= 100.0),
+            makeIntegerParam("pmax_depth"        ,  lower=2L      , upper=  20L),
             makeIntegerParam("pventana"          ,  lower=1L      , upper=  12L)
         ),
         has.simple.signature = FALSE,
@@ -663,30 +661,29 @@ if(!file.exists(env$mbo$archivo_trabajo))
 train_final  <-  dataset_grande[ foto_mes <= env$data$mes_ultimo_conclase  &  mes >= run$x$pventana+3-1, ]
 
 
-dtrain_final  <-   lgb.Dataset( data  = as.matrix(train_final[, !c("sample",env$data$campo_id, env$data$clase_nomcampo), with=FALSE]),
+dtrain_final  <-   xgb.DMatrix( data  = data.matrix( train_final[, !c("sample",env$data$campo_id, env$data$clase_nomcampo), with=FALSE]),
                                 label = train_final[ , get(env$data$clase_nomcampo)], 
-                                free_raw_data=FALSE 
+                                missing=NA 
                               )
 
 
-mfinal = lgb.train( 
+mfinal = xgb.train( 
                     data = dtrain_final,  
-                    objective="binary",
-                    eval = fganancia_logistic_lightgbm, 
-                    num_leaves= env$lightgbm$num_leaves,
-                    num_iterations= glob_num_iterations_mejor,
-                    max_bin = env$lightgbm$max_bin,
-                    boost_from_average= TRUE ,
-                    subsample = env$lightgbm$subsample, 
-                    feature_fraction = run$x$pfeature_fraction, 
-                    learning_rate = run$x$plearning_rate,
-                    min_data_in_leaf = run$x$pmin_data_in_leaf, 
+                    missing = NA,
+                    objective="binary:logistic",
+                    feval = fganancia_logistic_xgboost,  maximize= TRUE, 
+                    nround= glob_nround_mejor,
+                    tree_method = "hist",
+                    max_bin = env$xgboost$max_bin,
+                    base_score = mean( getinfo(dtrain_final, "label") ) ,
+                    subsample = env$xgboost$subsample, 
+                    colsample_bytree = run$x$pcolsample_bytree, 
+                    eta = run$x$peta,
+                    min_child_weight = run$x$pmin_child_weight, 
                     max_depth = run$x$pmax_depth,
-                    lambda_l1 = run$x$plambda_l1, 
-                    lambda_l2 = run$x$plambda_l2, 
-                    min_gain_to_split = run$x$pmin_gain_to_split,
-                    min_sum_hessian_in_leaf= env$lightgbm$min_sum_hessian_in_leaf,
-                    num_canaritos= 34
+                    alpha = run$x$palpha, 
+                    lambda = run$x$plambda, 
+                    gamma = run$x$pgamma,
                   )
 
 
@@ -695,7 +692,7 @@ test_final <- dataset_grande[  foto_mes== env$data$mes_ultimo, ]
 
 #aplico el modelo a datos nuevos
 testing_prediccion  <- predict( mfinal,  
-                                as.matrix(test_final[,!c("sample",env$data$campo_id, env$data$clase_nomcampo), with=FALSE ] ) )
+                                data.matrix(test_final[,!c("sample",env$data$campo_id, env$data$clase_nomcampo), with=FALSE ] ))
 
 #pego los numero_de_cliente  con la probabilidad
 tb_prediccion <-  as.data.table( cbind(   test_final[ , get(env$data$campo_id) ] , testing_prediccion ) )

@@ -1,6 +1,3 @@
-#En construccion
-#aun no funciona
-
 #modelo LightGBM
 #la cantidad optima de arboles de LightGBM se estima con Early Stopping
 
@@ -39,7 +36,7 @@ switch (Sys.info()[['sysname']],
 env$directory <- directory
 
 
-env$experimento          <-  4667
+env$experimento          <-  4501
 
 env$undersampling        <-  0.10
 
@@ -72,16 +69,12 @@ env$mbo <- mbo
 #sobre el funcionamiento de programa
 #en el lightgbm
 lgb <- list()
-lgb$semilla                 <- 102191
-lgb$max_bin                 <-    255
-lgb$subsample               <-      1.0
-lgb$num_iterations_max      <-   1000
-lgb$early_stopping_round    <-     30
-lgb$num_leaves              <-   1024
-lgb$max_depth               <-     -1
-lgb$min_data_in_leaf        <-      1
-lgb$min_gain_to_split       <-      0
-lgb$min_sum_hessian_in_leaf <-      0.0
+lgb$semilla               <- 102191
+lgb$max_bin               <-    255
+lgb$subsample             <-      1.0
+lgb$num_iterations_max    <-   1000
+lgb$early_stopping_round  <-     30
+lgb$num_leaves            <-   1024
 env$lightgbm <- lgb
 
 
@@ -338,7 +331,7 @@ fganancia_logistic_lightgbm   <- function(probs, clases)
 #------------------------------------------------------------------------------
 
 modelo_lightgbm_actual <- function( ptrain, ptest, ptest_clase, pclase_nomcampo, pclase_valor_positivo, pproblema, 
-                                   pfeature_fraction, plearning_rate, plambda_l1, plambda_l2 )
+                                   pfeature_fraction, plearning_rate, plambda_l1, plambda_l2, pmin_gain_to_split, pmin_data_in_leaf, pmax_depth )
 {
 
   #La gran llamada a  LightGBM
@@ -356,14 +349,9 @@ modelo_lightgbm_actual <- function( ptrain, ptest, ptest_clase, pclase_nomcampo,
                       subsample = env$lightgbm$subsample, 
                       feature_fraction = pfeature_fraction, 
                       learning_rate = plearning_rate,
-                      min_data_in_leaf = env$lightgbm$min_data_in_leaf, 
-                      max_depth = env$lightgbm$max_depth,
-                      lambda_l1 = plambda_l1, lambda_l2 = plambda_l2, 
-                      min_gain_to_split = env$lightgbm$min_gain_to_split,
-                      min_sum_hessian_in_leaf= env$lightgbm$min_sum_hessian_in_leaf,
-                      first_metric_only=TRUE,
-                      verbosity= 2,
-                      num_canaritos= 34
+                      min_data_in_leaf = pmin_data_in_leaf, 
+                      max_depth = pmax_depth,
+                      lambda_l1 = plambda_l1, lambda_l2 = plambda_l2, min_gain_to_split = pmin_gain_to_split,
                      )
                      
   iteracion_max      <- which.max( unlist(modelo$record_evals$valid$ganancia$eval) )
@@ -384,7 +372,7 @@ modelo_lightgbm_actual <- function( ptrain, ptest, ptest_clase, pclase_nomcampo,
 #------------------------------------------------------------------------------
 
 modelo_lightgbm_futuro <- function( ptrain, ptest, ptest_clase, pclase_nomcampo, pclase_valor_positivo, pproblema, 
-                                   pfeature_fraction, plearning_rate, plambda_l1, plambda_l2, pnum_iterations )
+                                   pfeature_fraction, plearning_rate, plambda_l1, plambda_l2, pmin_gain_to_split, pmin_data_in_leaf, pmax_depth, pnum_iterations )
 {
 
   #La gran llamada a  LightGBM
@@ -401,12 +389,9 @@ modelo_lightgbm_futuro <- function( ptrain, ptest, ptest_clase, pclase_nomcampo,
                       subsample = env$lightgbm$subsample, 
                       feature_fraction = pfeature_fraction, 
                       learning_rate = plearning_rate,
-                      min_data_in_leaf = env$lightgbm$min_data_in_leaf, 
-                      max_depth = env$lightgbm$max_depth,
-                      lambda_l1 = plambda_l1, lambda_l2 = plambda_l2, 
-                      min_gain_to_split = env$lightgbm$min_gain_to_split,
-                      min_sum_hessian_in_leaf= env$lightgbm$min_sum_hessian_in_leaf,
-                      num_canaritos= 34
+                      min_data_in_leaf = pmin_data_in_leaf, 
+                      max_depth = pmax_depth,
+                      lambda_l1 = plambda_l1, lambda_l2 = plambda_l2, min_gain_to_split = pmin_gain_to_split,
                      )
                      
                      
@@ -455,7 +440,10 @@ modelo_lightgbm_ganancia_MBO_directo <- function( x )
                              pfeature_fraction= x$pfeature_fraction,  
                              plearning_rate= x$plearning_rate, 
                              plambda_l1= x$plambda_l1,
-                             plambda_l2= x$plambda_l2
+                             plambda_l2= x$plambda_l2,
+                             pmin_gain_to_split= x$pmin_gain_to_split,
+                             pmin_data_in_leaf= x$pmin_data_in_leaf,
+                             pmax_depth= x$pmax_depth
                             )
 
 
@@ -480,6 +468,9 @@ modelo_lightgbm_ganancia_MBO_directo <- function( x )
                              plearning_rate= x$plearning_rate, 
                              plambda_l1= x$plambda_l1,
                              plambda_l2= x$plambda_l2,
+                             pmin_gain_to_split= x$pmin_gain_to_split,
+                             pmin_data_in_leaf= x$pmin_data_in_leaf,
+                             pmax_depth= x$pmax_depth,
                              pnum_iterations= mactual$num_iterations                             
                             )
 
@@ -499,9 +490,9 @@ modelo_lightgbm_ganancia_MBO_directo <- function( x )
                         "learning_rate=",    x$plearning_rate,              ", ",
                         "lambda_l1=",        x$plambda_l1,            ", ",
                         "lambda_l2=",        x$plambda_l2,           ", ",
-                        "min_gain_to_split=",env$lightgbm$min_gain_to_split,            ", ",
-                        "min_data_in_leaf=", env$lightgbm$min_data_in_leaf, ", ",
-                        "max_depth=",        env$lightgbm$max_depth,        ", ",
+                        "min_gain_to_split=",x$pmin_gain_to_split,            ", ",
+                        "min_data_in_leaf=", x$pmin_data_in_leaf, ", ",
+                        "max_depth=",        x$pmax_depth,        ", ",
                         "feature_fraction=", x$pfeature_fraction, ", ",
                         "max_bin=",          env$lightgbm$max_bin, ", ",
                         "subsample=",        env$lightgbm$subsample,
@@ -552,7 +543,7 @@ agregar_canaritos <- function( pdataset,  pcanaritos_cantidad )
   vcanaritos <-  paste0( "canarito", 1:pcanaritos_cantidad )
 
   #uso esta semilla para los canaritos
-  set.seed(10219)
+  set.seed(209789)
 
   pdataset[ , (vcanaritos) := 0 ]
   pdataset[ , (vcanaritos) := lapply(.SD, runif), .SDcols = vcanaritos]
@@ -574,7 +565,7 @@ gc()
 #Borro campos
 if( length(env$data$campos_a_borrar)>0 )  dataset_grande[ ,  (env$data$campos_a_borrar) := NULL    ] 
 
-set.seed(410551)
+set.seed(209743)
 #agrego variable para el undersampling
 dataset_grande[ ,  sample :=  runif( nrow(dataset_grande) )]
 
@@ -627,6 +618,9 @@ obj.fun <- makeSingleObjectiveFunction(
             makeNumericParam("plearning_rate"    ,  lower=0.0     , upper=   0.3),
             makeNumericParam("plambda_l1"        ,  lower=0.0     , upper=  50.0),
             makeNumericParam("plambda_l2"        ,  lower=0.0     , upper=  50.0),
+            makeNumericParam("pmin_gain_to_split",  lower=0.0     , upper=  20.0),
+            makeIntegerParam("pmin_data_in_leaf" ,  lower=0L      , upper= 100L),
+            makeIntegerParam("pmax_depth"        ,  lower=2L      , upper=  20L),
             makeIntegerParam("pventana"          ,  lower=1L      , upper=  12L)
         ),
         has.simple.signature = FALSE,
@@ -685,8 +679,6 @@ mfinal = lgb.train(
                     lambda_l1 = run$x$plambda_l1, 
                     lambda_l2 = run$x$plambda_l2, 
                     min_gain_to_split = run$x$pmin_gain_to_split,
-                    min_sum_hessian_in_leaf= env$lightgbm$min_sum_hessian_in_leaf,
-                    num_canaritos= 34
                   )
 
 

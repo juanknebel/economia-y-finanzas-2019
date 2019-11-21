@@ -320,7 +320,7 @@ fmetrica_ganancia  <- function( probs, clases, pclase_valor_positivo, problema )
 fmetrica_auc_lightgbm  = function( probs, clases )
 {
   pred             <-  ROCR::prediction(  probs, clases, label.ordering=c( 0, 1))
-  auc_testing      <-  ROCR::performance( pred,"auc"); 
+  auc_testing      <-  ROCR::performance( pred,"auc") 
  
   return( unlist(auc_testing@y.values) )
 
@@ -530,7 +530,7 @@ modelo_lightgbm_ganancia_MBO_directo <- function( x )
   if( mactual$ganancia_test >  glob_ganancia_mejor )
   {
     glob_ganancia_mejor  <<- mactual$ganancia_test
-    ; glob_num_iterations_mejor    <<- mactual$num_iterations
+    glob_num_iterations_mejor    <<- mactual$num_iterations
     
     setwd( env$directory$work )
     fwrite(  mactual$importancia,

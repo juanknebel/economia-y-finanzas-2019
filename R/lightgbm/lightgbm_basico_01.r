@@ -86,7 +86,7 @@ fmetrica_ganancia_lightgbm  = function( pprob_corte, probs, clases, problema )
 fmetrica_auc_lightgbm  = function( probs, clases )
 {
   pred             <-  ROCR::prediction(  probs, clases, label.ordering=c( 0, 1))
-  auc_testing      <-  ROCR::performance( pred,"auc"); 
+  auc_testing      <-  ROCR::performance( pred,"auc") 
  
   return( unlist(auc_testing@y.values) )
 

@@ -1,4 +1,11 @@
-#Este programa hace ONCE optimizaciones bayesianas
+#Se optimiza la probabilidad de corte
+
+#Este programa hace ONCE optimizaciones bayesianas, y usa el archivo  _hist.txt
+#se trabaja  con  1={BAJA+2}    0={BAJA+1, CONTINUA}
+#se calcula la nueva probabilidad de corte, sobre la mitad al azar de testing
+
+
+#seria muy deseable utilizar el dataset  _exthist.txt  generado por  fe_todoenuno.r
 
 
 #limpio la memoria
@@ -35,7 +42,7 @@ switch (Sys.info()[['sysname']],
 env$directory <- directory
 
 
-env$experimento          <-  15002
+env$experimento          <-  17102
 env$procesar_solo_201904 <-  FALSE
 
 env$undersampling        <-  0.1
@@ -49,13 +56,13 @@ data$campo_id             <-  "numero_de_cliente"
 data$clase_nomcampo       <-  "clase_ternaria"
 data$clase_valor_positivo <-  "BAJA+2"
 data$campos_a_borrar      <-  c()
-data$archivo_grande       <-  "paquete_premium_hist.txt.gz"
+data$archivo_grande       <-  "paquete_premium_exthist.txt.gz"  #aqui deberia usar el  _exthist  que tiene todos los campos creativos
 env$data <- data
 
 
 #Parametros  mlrMBO   Optimizacion Bayesiana
 mbo <- list()
-mbo$iteraciones       <-  100   # cuantas iteraciones hace la Optimicacion Bayesiana
+mbo$iteraciones       <-  100   # cuantas iteraciones hace la Optimizacion Bayesiana
 mbo$saveondisk_time   <-  600   # cada 600 segundos guarda a disco cuanto avanzo
 env$mbo <- mbo
 
@@ -78,7 +85,7 @@ hiper$experimento    <-  env$experimento
 hiper$arch_global    <-  "hiperparametro_GLOBAL.txt"
 hiper$arch_local     <-  paste( "hiperparametro_", env$experimento, ".txt", sep="" )
 hiper$arch_over      <-  paste( "exp_", env$experimento, "_over.jpg", sep="" )
-hiper$directory      <-  env$directory_work
+hiper$directory      <-  env$directory$work
 hiper$clase_tipo     <-  "binaria1"
 hiper$programa       <-  "lightgbm_directo_wfv.r"
 hiper$algoritmo      <-  "lightgbm"
@@ -93,9 +100,6 @@ env$hiper <-  hiper
 problema <- list()
 problema$ganancia_acierto     <-  19500 
 problema$ganancia_noacierto   <-   -500
-problema$prob_corte           <-   -problema$ganancia_noacierto*(1/env$undersampling)/( problema$ganancia_acierto - problema$ganancia_noacierto*(1/env$undersampling) )
-
-
 env$problema <- problema
 
 
@@ -207,10 +211,14 @@ hiperparametros_grabar <- function( phiper,
 #Si es un acierto  sumar  kganancia_acierto    ( +19500 ) 
 #Si NO es acierto  sumar  kganancia_noacierto  (   -500 )
 
+#Variable Global que va a modificar la probabilidad de corte
+# como multiplico, 1.0 significa que NO lo cambio
+Gprobcorte_mult <-  1.0
+
 fmetrica_ganancia  <- function( probs, clases, pclase_valor_positivo, problema )
 {
  
-  return(  sum(    (probs > problema$prob_corte  ) * 
+  return(  sum(    (probs > problema$prob_corte*Gprobcorte_mult ) * 
                    ifelse( clases== pclase_valor_positivo, problema$ganancia_acierto, problema$ganancia_noacierto )   
               )
          )
@@ -219,7 +227,7 @@ fmetrica_ganancia  <- function( probs, clases, pclase_valor_positivo, problema )
 #Esta funcion calcula AUC  Area Under Curve  de la Curva ROC
 #Esta funcion calcula AUC  Area Under Curve  de la Curva ROC
 
-fmetrica_auc_lightgbm  = function( probs, clases )
+fmetrica_auc_lightgbm  <- function( probs, clases )
 {
   pred             <-  ROCR::prediction(  probs, clases, label.ordering=c( 0, 1))
   auc_testing      <-  ROCR::performance( pred,"auc") 
@@ -228,27 +236,59 @@ fmetrica_auc_lightgbm  = function( probs, clases )
 
 }
 #------------------------------------------------------------------------------
+#Esta parte del codigo es MUY  OSCURA
+#En la misma funcino se estima el punto de corte optimo sobre la mitad de testing
+#Y se calcula la ganancia sobre la OTRA mitad de testing
+#El usar el campo  weight, es realmente una solucion MUY TURBIA
+#Esta sola funcion demanda 1 hora de explicacion en el pizarron
+#debe entenderse que esta fijo lo que recibe y fijo lo que devuelve
+
+Glgbm_actual <- list( "ganancia_mejor"=0, "prob_corte"=0 )
+
 
 fganancia_logistic_lightgbm   <- function(probs, clases) 
 {
 
-   vlabels <- getinfo(clases, "label")
-  
-   gan <-sum(   (probs > env$problema$prob_corte  ) * 
-                 ifelse( vlabels== 1, env$problema$ganancia_acierto, env$problema$ganancia_noacierto )   
-            )
-        
+   vlabels   <- getinfo(clases, "label")
+   vweights  <- getinfo(clases, "weight")
+
+   tbl <- as.data.table( cbind(probs, vlabels, vweights) )
+   colnames( tbl ) <-  c( "prob", "clase", "peso" )
+   
+   #me quedo solo con los datos de validation para estimar la mejor probabilidad de corte
+   tbl <- tbl[ peso>1.0, ]
+   setorder(tbl, -prob )
+   tbl[ , ganancia:= ifelse( clase==1,  env$problema$ganancia_acierto, env$problema$ganancia_noacierto ) ]
+   tbl[ , ganacum:= cumsum( tbl$ganancia ) ]
+   pos <- which.max( tbl$ganacum )
+   vprob_corte <-  tbl[ pos, prob ]
+   
+
+   gan <-2.0 * sum(   (vweights==1.0) * (probs > vprob_corte  ) * 
+                      ifelse( vlabels== 1, env$problema$ganancia_acierto, env$problema$ganancia_noacierto )   
+                  )
+
+   if( gan > Glgbm_actual$ganancia_mejor )
+   {
+     #setwd(env$directory$work)
+     #fwrite( tbl, file="proba.txt", sep="\t" )
+   
+     Glgbm_actual$prob_corte       <<- vprob_corte
+     Glgbm_actual$ganancia_mejor   <<- gan
+   }
 
    return(  list(name = "ganancia", value =  ifelse(  is.na(gan) , 0, gan), higher_better= TRUE )  )
 }
 #------------------------------------------------------------------------------
+
+Gprob_corte_futuro <- 0.0
 
 fganancia_logistic_lightgbm_futuro   <- function(probs, clases) 
 {
 
    vlabels <- getinfo(clases, "label")
   
-   gan <-sum(   (probs > 0.025  ) * 
+   gan <-sum(   (probs > Gprob_corte_futuro  ) * 
                  ifelse( vlabels== 1, env$problema$ganancia_acierto, env$problema$ganancia_noacierto )   
             )
         
@@ -257,10 +297,12 @@ fganancia_logistic_lightgbm_futuro   <- function(probs, clases)
 }
 #------------------------------------------------------------------------------
 
-modelo_lightgbm_actual <- function( ptrain, ptest, ptest_clase, pclase_nomcampo, pclase_valor_positivo, pproblema, 
-                                   pfeature_fraction, plearning_rate, plambda_l1, plambda_l2, pmin_gain_to_split, pmin_data_in_leaf, pmax_depth )
+modelo_lightgbm_actual <- function( ptrain, ptest, ptest_clase, pclase_nomcampo, pclase_valor_positivo, pproblema, pprobcorte_mult,
+                                    pfeature_fraction, plearning_rate, plambda_l1, plambda_l2, pmin_gain_to_split, pmin_data_in_leaf, pmax_depth )
 {
-
+  Glgbm_actual$prob_corte       <<- 0
+  Glgbm_actual$ganancia_mejor   <<- 0
+  
   #La gran llamada a  LightGBM
   modelo = lgb.train( 
                       data = ptrain,  
@@ -295,14 +337,18 @@ modelo_lightgbm_actual <- function( ptrain, ptest, ptest_clase, pclase_nomcampo,
                "auc_test"=auc, 
                "canaritos_muertos"=  vcanaritos_muertos, 
                "num_iterations"= iteracion_max,
+               "prob_corte"= Glgbm_actual$prob_corte,
                "importancia"=tb_importancia ) )
 }
 #------------------------------------------------------------------------------
 
-modelo_lightgbm_futuro <- function( ptrain, ptest, ptest_clase, pclase_nomcampo, pclase_valor_positivo, pproblema, 
-                                   pfeature_fraction, plearning_rate, plambda_l1, plambda_l2, pmin_gain_to_split, pmin_data_in_leaf, pmax_depth, pnum_iterations )
+modelo_lightgbm_futuro <- function( ptrain, ptest, ptest_clase, pclase_nomcampo, pclase_valor_positivo, pproblema, pprobcorte,
+                                    pfeature_fraction, plearning_rate, plambda_l1, plambda_l2, pmin_gain_to_split, pmin_data_in_leaf, pmax_depth, pnum_iterations )
 {
 
+  #Asigno la variable global  Gprob_corte_futuro
+  Gprob_corte_futuro <<- pprobcorte
+  
   #La gran llamada a  LightGBM
   modelo = lgb.train( 
                       data = ptrain,  
@@ -340,14 +386,11 @@ modelo_lightgbm_futuro <- function( ptrain, ptest, ptest_clase, pclase_nomcampo,
                "importancia"=tb_importancia ) )
 }
 #------------------------------------------------------------------------------
-x <- list( pventana=12, pfeature_fraction=0.7, plearning_rate=0.1, plambda_l1=0.1, plambda_l2=3.0, pmin_gain_to_split=5, pmin_data_in_leaf=10, pmax_depth=20, pnum_iterations=100)
+x <- list( pventana=10, pfeature_fraction=0.45346964467247, plearning_rate=0.0400473344887141, plambda_l1=0.77902263274882, plambda_l2=18.5116389467148, pmin_gain_to_split=1.20450788270682, pmin_data_in_leaf=29, pmax_depth=15, pnum_iterations=400)
 
-glob_procesar_futuro   <-  0
-glob_mes_cero          <- 201904
-glob_mes_actual_train  <-  7
-glob_ganancia_mejor <- 0
-glob_num_iterations_mejor   <- 0
+Gmbo  <- list( "ganancia_mejor"=0, "num_iterations"=0, "prob_corte"=0 )
 glob_mfuturo_ganancia_test <- 0
+
 
 modelo_lightgbm_ganancia_MBO_directo <- function( x )
 {
@@ -360,11 +403,11 @@ modelo_lightgbm_ganancia_MBO_directo <- function( x )
   vmes_futuro_train  <- glob_mes_actual_train -2
   vmes_futuro_test   <- vmes_futuro_train - 2
   
-  dactual_train <-   lgb.Dataset( data  = as.matrix(dataset_grande[ (sample < env$undersampling | clase_ternaria==1) & mes<=(vmes_actual_train + x$pventana-1)  &  mes>=vmes_actual_train & mes!=vmes_actual_test, 
+  dactual_train <-   lgb.Dataset( data  = as.matrix(dataset_grande[ (sample < env$undersampling | clase_ternaria==env$data$clase_valor_positivo) & mes<=(vmes_actual_train + x$pventana-1)  &  mes>=vmes_actual_train & mes!=vmes_actual_test, 
                                                            !c("sample",env$data$campo_id, env$data$clase_nomcampo), 
                                                            with=FALSE]),
-                                  label = dataset_grande[ (sample < env$undersampling | clase_ternaria==1) & mes<=(vmes_actual_train + x$pventana-1)  &  mes>=vmes_actual_train & mes!=vmes_actual_test,
-                                                          get(  env$data$clase_nomcampo) ] ,
+                                  label = dataset_grande[ (sample < env$undersampling | clase_ternaria==env$data$clase_valor_positivo) & mes<=(vmes_actual_train + x$pventana-1)  &  mes>=vmes_actual_train & mes!=vmes_actual_test,
+                                                           as.integer( get(env$data$clase_nomcampo) == env$data$clase_valor_positivo  ) ] ,
                                   free_raw_data=FALSE
                                 )
 
@@ -384,6 +427,13 @@ modelo_lightgbm_ganancia_MBO_directo <- function( x )
                              pmax_depth= x$pmax_depth
                             )
 
+  
+  if( mactual$ganancia_test >  Gmbo$ganancia_mejor )
+  {
+    Gmbo$ganancia_mejor    <<- mactual$ganancia_test
+    Gmbo$num_iterations    <<- mactual$num_iterations
+    Gmbo$prob_corte        <<- mactual$prob_corte
+  }
 
   if( glob_procesar_futuro )
   {
@@ -392,18 +442,24 @@ modelo_lightgbm_ganancia_MBO_directo <- function( x )
                                                               !c("sample",env$data$campo_id, env$data$clase_nomcampo), 
                                                                with=FALSE]),
                                       label = dataset_grande[ mes<=(vmes_futuro_train+x$pventana-1)  &  mes>=vmes_futuro_train & mes!=vmes_futuro_test,
-                                                              get(  env$data$clase_nomcampo) ] ,
+                                                              as.integer( get(env$data$clase_nomcampo) == env$data$clase_valor_positivo  ) ] ,
                                       free_raw_data=FALSE
                                     )
 
-
+    #calculo cuanto tiene que dar la probabilidad que estime con undersampling, en el dataset normal sin undersampling 
+    vmult <- (1/env$undersampling)
+    vgan_mala <-  - env$problema$ganancia_noacierto
+    vprob_corte_futuro <-  vgan_mala / (  vgan_mala +  vmult*vgan_mala*( 1/mactual$prob_corte -1 ) ) 
+    
+    
     mfuturo  <- modelo_lightgbm_futuro(
                                dfuturo_train,  
                                dfuturo_test, 
                                dfuturo_test_clase, 
                                env$data$clase_nomcampo, 
                                env$data$clase_valor_positivo, 
-                               env$problema, 
+                               env$problema,
+                               pprobcorte= vprob_corte_futuro,
                                pfeature_fraction= x$pfeature_fraction,  
                                plearning_rate= x$plearning_rate, 
                                plambda_l1= x$plambda_l1,
@@ -415,17 +471,17 @@ modelo_lightgbm_ganancia_MBO_directo <- function( x )
                               )
 
 
-
+    glob_mfuturo_ganancia_test <<- mfuturo$ganancia_test
   
     t1   <-  Sys.time()
     tiempo_corrida <-  as.numeric( t1 - t0, units = "secs")
 
-    glob_mfuturo_ganancia_test  <<-  mfuturo$ganancia_test
 
     #escribo en el archivo de salida aqui adentro de la funcion, porque es la unica oportunidad que tengo
 
     #genero el string con los parametros
-    st_parametros = paste("ventana=", x$pventana,                      ", ",
+    st_parametros = paste("ventana=",          x$pventana,             ", ",
+                          "probcorte=",        mactual$prob_corte,     ", ",
                           "num_iterations=",   mactual$num_iterations, ", ",
                           "learning_rate=",    x$plearning_rate,       ", ",
                           "lambda_l1=",        x$plambda_l1,           ", ",
@@ -449,7 +505,7 @@ modelo_lightgbm_ganancia_MBO_directo <- function( x )
                             pfuturo_auc= mfuturo$auc_test,
                             pfuturo_canaritos= mfuturo$canaritos_muertos,
                             ptiempo= tiempo_corrida,
-                            pprob_corte= env$problema$prob_corte, 
+                            pprob_corte= vprob_corte_futuro, 
                             pst_parametros= st_parametros, 
                             parchivo_actual_train= paste( tb_meses[ mes==(vmes_actual_train+x$pventana-1), foto_mes]  ,"-",tb_meses[ mes==vmes_actual_train, foto_mes]),
                             parchivo_actual_test=  tb_meses[ mes==vmes_actual_test, foto_mes],
@@ -460,17 +516,11 @@ modelo_lightgbm_ganancia_MBO_directo <- function( x )
                           )
   
     #Grabo la importancia de las variables
-    if( mactual$ganancia_test >  glob_ganancia_mejor )
-    {
-      glob_ganancia_mejor  <<- mactual$ganancia_test
-      glob_num_iterations_mejor    <<- mactual$num_iterations
-    
-      setwd( env$directory$work )
-      fwrite(  mactual$importancia,
-               file = paste0( "importancia_", env$experimento,"_", glob_mes_cero,".txt"),
-               sep="\t" )
-    }
-
+    setwd( env$directory$work )
+    fwrite(  mactual$importancia,
+             file = paste0( "importancia_", env$experimento,".txt"),
+             sep="\t" )
+  
   }
   
   
@@ -494,13 +544,17 @@ agregar_canaritos <- function( pdataset,  pcanaritos_cantidad )
 }
 #------------------------------------------------------------------------------
 #pmes_cero  es el mes del futuro donde supuestamente no tengo clase 
+pmes_cero <- 201904
+
 
 optimizacion_bayesiana <- function( pmes_cero )
 {
 
-  glob_procesar_futuro      <<- 0
-  glob_ganancia_mejor       <<- 0
-  glob_num_iterations_mejor <<- 0
+  glob_procesar_futuro  <<- 0
+  Gmbo$ganancia_mejor   <<- 0
+  Gmbo$num_iterations   <<- 0
+  Gmbo$prob_corte       <<- 0
+  
   
   glob_mes_actual_train     <<-  tb_meses[ foto_mes==pmes_cero, mes] + 2 + 2
 
@@ -511,14 +565,19 @@ optimizacion_bayesiana <- function( pmes_cero )
   vmes_futuro_test   <- vmes_futuro_train - 2
 
   
-  
+  #en estos dos datasets, que es donde mido la ganancia, se cumplen dos cosas
+  # 1=BAJA+2  y  0 = {BAJA+1,CONTINUA}
+  # no hago undersampling, van completos
+  vazar  <- runif( nrow(dataset_grande[ mes==vmes_actual_test,]) )
+  vpesos <- ifelse( vazar<0.5, 1.0, 1.00000001 )
   dactual_test  <<-   lgb.Dataset( data  = as.matrix(dataset_grande[mes==vmes_actual_test, !c("sample",env$data$campo_id, env$data$clase_nomcampo), with=FALSE]),
-                                  label = dataset_grande[ mes==vmes_actual_test, get(env$data$clase_nomcampo)],
+                                  label  = dataset_grande[ mes==vmes_actual_test, as.integer( get(env$data$clase_nomcampo) == env$data$clase_valor_positivo  )],
+                                  weight = vpesos,
                                   free_raw_data=FALSE
                                 )
 
   dfuturo_test  <<-   lgb.Dataset( data  = as.matrix(dataset_grande[mes==vmes_futuro_test, !c("sample",env$data$campo_id, env$data$clase_nomcampo), with=FALSE]),
-                                  label = dataset_grande[ mes==vmes_futuro_test, get(env$data$clase_nomcampo)],
+                                  label = dataset_grande[ mes==vmes_futuro_test,as.integer( get(env$data$clase_nomcampo) == env$data$clase_valor_positivo  )],
                                   free_raw_data=FALSE
                                 )
 
@@ -569,10 +628,18 @@ optimizacion_bayesiana <- function( pmes_cero )
     run <- mboContinue( varchivo_trabajo )
   }
  
-  #Ahora imprimo el futuro pero SOLO para la mejor corrida
-  glob_procesar_futuro      <<- 1
-  glob_mes_cero             <<- pmes_cero
+  #Ahora vuelvo a calacular todo, con la mejor corrida  run$x
+  #PERO esta vez genero el modelo del futuro, lo aplico
+  #y grabo la linea en hiperparametro_xxxx.txt
+  glob_procesar_futuro  <<- 1
+  Gmbo$ganancia_mejor   <<- 0
+  Gmbo$num_iterations   <<- 0
+  Gmbo$prob_corte       <<- 0
+ 
+
   modelo_lightgbm_ganancia_MBO_directo( run$x )
+  
+  
   
   #Si pmes_cero es 201904, entonces ya genero la salida de la materia
   if( pmes_cero== 201904 )
@@ -586,27 +653,26 @@ optimizacion_bayesiana <- function( pmes_cero )
 
 
     dtrain_final  <-   lgb.Dataset( data  = as.matrix(train_final[, !c("sample",env$data$campo_id, env$data$clase_nomcampo), with=FALSE]),
-                                    label = train_final[ , get(env$data$clase_nomcampo)], 
+                                    label = train_final[ , as.integer( get(env$data$clase_nomcampo) == env$data$clase_valor_positivo  )], 
                                     free_raw_data=FALSE 
                                   )
-
-
+ 
     mfinal = lgb.train( 
-                        data = dtrain_final,  
-                        objective="binary",
-                        eval = fganancia_logistic_lightgbm, 
+                        data= dtrain_final,  
+                        objective= "binary",
+                        eval= fganancia_logistic_lightgbm, 
                         num_leaves= env$lightgbm$num_leaves,
-                        num_iterations= glob_num_iterations_mejor,
-                        max_bin = env$lightgbm$max_bin,
+                        num_iterations= Gmbo$num_iterations,
+                        max_bin= env$lightgbm$max_bin,
                         boost_from_average= TRUE ,
-                        subsample = env$lightgbm$subsample, 
-                        feature_fraction = run$x$pfeature_fraction, 
-                        learning_rate = run$x$plearning_rate,
-                        min_data_in_leaf = run$x$pmin_data_in_leaf, 
-                        max_depth = run$x$pmax_depth,
-                        lambda_l1 = run$x$plambda_l1, 
-                        lambda_l2 = run$x$plambda_l2, 
-                        min_gain_to_split = run$x$pmin_gain_to_split,
+                        subsample= env$lightgbm$subsample, 
+                        feature_fraction= run$x$pfeature_fraction, 
+                        learning_rate= run$x$plearning_rate,
+                        min_data_in_leaf= run$x$pmin_data_in_leaf, 
+                        max_depth= run$x$pmax_depth,
+                        lambda_l1= run$x$plambda_l1, 
+                        lambda_l2= run$x$plambda_l2, 
+                        min_gain_to_split= run$x$pmin_gain_to_split,
                       ) 
 
 
@@ -632,18 +698,23 @@ optimizacion_bayesiana <- function( pmes_cero )
           )         
 
    #Genero la salida de la materia 
-   #Entrene sobre todos los datos, la probabilidad de corte es 0.025
-   fwrite(  tb_prediccion[ prob>0.025, "ID"],
+   #Entrene sobre todos los datos, la probabilidad de corte es 0.025 * run$x$pprobcorte_mult
+   vmult <- (1/env$undersampling)
+   vgan_mala <-  - env$problema$ganancia_noacierto
+   vprob_corte_futuro <-  vgan_mala / (  vgan_mala +  vmult*vgan_mala*( 1/Gmbo$prob_corte -1 ) ) 
+ 
+   fwrite(  tb_prediccion[ prob > vprob_corte_futuro, "ID"],
             file =paste0( "salida_", env$experimento, "_entregamateria.txt" ),
             col.names= FALSE,
             sep="\t" 
          )         
   }
   
-  return(  list("mes_vero"=pmes_cero,  "metrica1_futuro"= glob_mfuturo_ganancia_test) )
+  return(  list("mes_cero"=pmes_cero,  "metrica1_futuro"= glob_mfuturo_ganancia_test) )
 }
 #------------------------------------------------------------------------------
-
+#------------------------------------------------------------------------------
+#Aqui comienza el programa
 
 #cargo los archivos de entrada
 setwd( env$directory$datasets)
@@ -657,15 +728,13 @@ if( env$data$archivo_grande %like% "gz" )
 #Borro campos
 if( length(env$data$campos_a_borrar)>0 )  dataset_grande[ ,  (env$data$campos_a_borrar) := NULL    ] 
 
-#dejo la clase en {0,1}  clase  binaria1
-dataset_grande[, (env$data$clase_nomcampo) := as.numeric( get(env$data$clase_nomcampo) == env$data$clase_valor_positivo  )] 
 
 #agrego variable para el undersampling
 set.seed(209743)
 dataset_grande[ ,  sample :=  runif( nrow(dataset_grande) )]
 
 #agrego las variables canarito
-agregar_canaritos( dataset_grande, 34*4 )
+agregar_canaritos( dataset_grande, 100 )
 
 #agrego la columna  mes_actual
 vmeses <-  abs(sort(-unique( dataset_grande$foto_mes )))
@@ -680,6 +749,9 @@ hiperparametros_crear(env$hiper)
 meses_a_procesar  <-   tb_meses[  foto_mes>=201806  & foto_mes<=201904, foto_mes ] 
 if( env$procesar_solo_201904 )  meses_a_procesar= c( 201904 )
 
+
+
+#Atencion, aqui empieza la corrida pesada
 #corro una optimizacion bayesiana para cada uno de los meses 201904, 201903, 201902,  ...
 res <- lapply( meses_a_procesar, optimizacion_bayesiana )
 

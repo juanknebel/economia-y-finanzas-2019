@@ -94,7 +94,7 @@ modelo_lightgbm_aplicar = function( ptrain, pvalidate_sinclase, pvalidate_clase,
 
   #calculo AUC
   pred             <-  ROCR::prediction(  aplicacion_prediccion, ptest_clase, label.ordering=c( 0, 1))
-  auc_testing      <-  ROCR::performance( pred,"auc"); 
+  auc_testing      <-  ROCR::performance( pred,"auc") 
   auc_test <-  unlist(auc_testing@y.values)
 
 
@@ -160,7 +160,7 @@ modelo_lightgbm_estimar = function( ptrain, pvalidate, ptest_sinclase, ptest_cla
 
   #calculo AUC
   pred             <-  ROCR::prediction(  aplicacion_prediccion, ptest_clase, label.ordering=c( 0, 1))
-  auc_testing      <-  ROCR::performance( pred,"auc"); 
+  auc_testing      <-  ROCR::performance( pred,"auc") 
   auc_test <-  unlist(auc_testing@y.values)
 
   pcorte <-  vpcorte_global[ iteracion_max ]

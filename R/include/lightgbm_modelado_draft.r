@@ -35,7 +35,7 @@ modelo_lightgbm_pcorte = function( ptrain, ptest, lgbm, psemilla, pnum_iteration
 
   #calculo AUC
   pred             <-  ROCR::prediction(  aplicacion_prediccion, ptest$clase, label.ordering=c( 0, 1))
-  auc_testing      <-  ROCR::performance( pred,"auc"); 
+  auc_testing      <-  ROCR::performance( pred,"auc") 
   auc <-  unlist(auc_testing@y.values)
 
   # calculo la ganancia
@@ -75,7 +75,7 @@ modelo_lightgbm = function( ptrain, ptest, lgbm, psemilla, pnum_iterations, pfea
 
   #calculo AUC
   pred             <-  ROCR::prediction(  aplicacion_prediccion, ptest$clase, label.ordering=c( 0, 1))
-  auc_testing      <-  ROCR::performance( pred,"auc"); 
+  auc_testing      <-  ROCR::performance( pred,"auc") 
   auc <-  unlist(auc_testing@y.values)
 
 

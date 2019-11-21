@@ -57,7 +57,7 @@ fmetrica_auc_rpart  = function( probs, clases, pclase_valor_positivo )
 {
   testing_binaria  <-  as.numeric( clases == pclase_valor_positivo  )
   pred             <-  ROCR::prediction(  probs, testing_binaria, label.ordering=c( 0, 1))
-  auc_testing      <-  ROCR::performance( pred,"auc"); 
+  auc_testing      <-  ROCR::performance( pred,"auc") 
  
   return( unlist(auc_testing@y.values) )
 

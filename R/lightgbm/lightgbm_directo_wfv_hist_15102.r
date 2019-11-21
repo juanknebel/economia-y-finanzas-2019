@@ -35,7 +35,7 @@ switch (Sys.info()[['sysname']],
 env$directory <- directory
 
 
-env$experimento          <-  15002
+env$experimento          <-  15102
 env$procesar_solo_201904 <-  FALSE
 
 env$undersampling        <-  0.1
@@ -49,7 +49,7 @@ data$campo_id             <-  "numero_de_cliente"
 data$clase_nomcampo       <-  "clase_ternaria"
 data$clase_valor_positivo <-  "BAJA+2"
 data$campos_a_borrar      <-  c()
-data$archivo_grande       <-  "paquete_premium_hist.txt.gz"
+data$archivo_grande       <-  "paquete_premium_exthist.txt.gz"
 env$data <- data
 
 

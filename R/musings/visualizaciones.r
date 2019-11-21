@@ -34,8 +34,18 @@ setwd( "M:\\datasets\\dias" )
 dataset_actual <- fread( "201902_dias.txt" )
 dataset_futuro <- fread( "201904_dias.txt" )
 
+setwd( "/media/Shared/gustavo/cloud1/datasets/" )
+
+dataset <- fread( "paquete_premium_hist.txt.gz" )
+
+dataset_actual <- dataset[ foto_mes==201902, ]
+dataset_futuro <- dataset[ foto_mes==201904, ]
+
+
 dataset_actual <- dataset_actual[  (Visa_mfinanciacion_limite<167.9 | is.na(Visa_mfinanciacion_limite<167.9) )  , ]
 dataset_futuro <- dataset_futuro[  (Visa_mfinanciacion_limite<167.9 | is.na(Visa_mfinanciacion_limite<167.9) ) , ]
+rm( dataset )
+gc()
 
 
 dataset_actual[  , clase01:= as.numeric( clase_ternaria=="BAJA+2" ) ]
@@ -53,6 +63,60 @@ res <- lapply( colbuenas, liftcurve_area, dataset_actual )
 res <- rbindlist( res )
 setorder(  res,  -area )
 
+corte <- 10
+
+setorderv( dataset_actual, c( "mcuentas_saldo", "azar")  )
+
+vacum <- cumsum( dataset_actual$clase01 )
+linea_muerte <-  c( vacum[corte] )
+
+for( i in 1:100 )
+{
+  dataset_actual[   , clase01 := sample( dataset_actual$clase01, replace=FALSE ) ]
+  tope <- 0
+  for( vcolumna in res$columna )
+  {
+    setorderv( dataset_actual, c( vcolumna, "azar")  )
+    vacum <- cumsum( dataset_actual$clase01 )
+    if(  vacum[corte] > tope )
+    {  
+      tope <- vacum[corte]
+      cat( tope, " "  )
+    }
+  }
+  linea_muerte <- c( linea_muerte, tope )
+
+}
+
+
+linea_muerte2 <-  c( linea_muerte[1] )
+
+for( i in 1:100 )
+{
+  dataset_actual[   , clase01 := sample( dataset_actual$clase01, replace=FALSE ) ]
+  tope <- 0
+  for( vcolumna in res$columna )
+  {
+    dataset_actual[   , clase01 := sample( dataset_actual$clase01, replace=FALSE ) ]
+    vacum <- cumsum( dataset_actual$clase01 )
+    if(  vacum[corte] > tope )
+    {  
+      tope <- vacum[corte]
+      cat( tope, " "  )
+    }
+  }
+  linea_muerte2 <- c( linea_muerte2, tope )
+
+}
+
+lm1 <- linea_muerte[-1]
+lm2 <- linea_muerte2[-1]
+
+median( lm1 )
+median( lm2 )
+max( lm1 )
+max( lm2 )
+
 
 for( vcolumna in res$columna )
 {
@@ -63,6 +127,8 @@ setorderv( dataset_actual, c( vcolumna, "azar")  )
 setorderv( dataset_futuro, c( vcolumna, "azar")  )
 
 frollmean( dataset_actual$clase01, 100 )
+
+dataset_actual[  , pos_acum:= cumsum( clase01) ]
 
 dataset_actual[  , ganancia_acum:= cumsum( ganancia) ]
 dataset_futuro[  , ganancia_acum:= cumsum( ganancia) ]
