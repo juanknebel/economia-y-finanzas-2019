@@ -1,0 +1,393 @@
+---
+title: "Conectando al negocio"
+author: "Alejandro Bolaños"
+date: "2019-11-11"
+version: 0.7
+output: 
+  html_document:
+    theme: spacelab
+    highlight: monochrome
+    df_print: paged
+#    toc: true
+#    toc_depth: 2
+
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+> If you don’t collect any metrics, you’re flying blind. If you collect and focus on too many, they may be obstructing your field of view. 
+
+―-- Scott M. Graffius
+
+El foco de esta práctica es como comunicar los resultados a las áreas de negocio y como sugerir la utilización de los modelos. 
+
+No es simple sentarse hablar con los usuarios de negocios contando las bondades de nuestro modelo usando el área bajo la curva.
+
+En nuestro problema, contamos con el cálculo del `profit`, algo con lo que no siempre se cuenta.
+
+```{r}
+
+rm( list=ls() )
+gc()
+
+```
+
+Generamos un modelo sobre el que vamos a hacer las mediciones
+
+```{r}
+library( "data.table" )
+vsemillas <- c(810757,482071,340979,446441,917513)
+
+periodo_delta <- function (foto_mes, delta) {
+  
+  len <-2
+  
+  step_cant <- delta
+  
+  step <- paste0(step_cant, " months")
+  
+  resultado <-  as.integer(strftime(seq(
+    as.Date(paste0(foto_mes, "01"), format = "%Y%m%d"),
+    length = len,
+    by = step
+  ), format = "%Y%m"))
+  
+  return(resultado[2])
+
+  }
+
+periodos_delta_serie <- function (foto_mes, delta) {
+  sapply(0:(delta), periodo_delta, foto_mes=foto_mes)
+}
+
+cargar_meses <- function(foto_mes, diferencia=0, baja1=FALSE) {
+  dataset_list <- list()
+  clases_vector <- c()
+  
+  for (fm in periodos_delta_serie(foto_mes, diferencia)) {
+    #dataset_mes <- fread(paste0("~/dias/", fm, "_dias.txt"))
+    dataset_mes <- readRDS(paste0("../datasets/dias/", fm, ".RDS"))
+
+    if (baja1) {
+      clases <- ifelse(dataset_mes[, clase_ternaria] == "CONTINUA", 0, 1)
+    } else {
+      clases <- ifelse(dataset_mes[, clase_ternaria] == "BAJA+2", 1, 0)
+    }
+    dataset_mes[, clase_ternaria := NULL]
+    dataset_mes[, numero_de_cliente := NULL]
+    dataset_mes[, foto_mes := NULL]
+    
+    dataset_list[[as.character(fm)]] <- dataset_mes
+    clases_vector <- c(clases_vector, clases)
+  }
+  resultado <- list()
+  resultado[["datos"]] <- rbindlist(dataset_list)
+  resultado[["clases"]] <- clases_vector
+  resultado
+}
+
+p201802 <- cargar_meses(201802,0)
+p201804 <- cargar_meses(201804,0)
+
+library(xgboost)
+
+dtrain   <- xgb.DMatrix( data = data.matrix(p201802$datos),  label = p201802$clases, missing=NA )
+
+set.seed(vsemillas[1])
+
+modelo = xgb.train( 
+				data = dtrain,  
+				missing = NA,
+				nround= 50,
+				maximize =TRUE,
+				objective="binary:logistic"
+				)
+
+p201804$pred <- predict(modelo, data.matrix(p201804$datos),  type = "prob")
+p201804$score <- data.table(clases = p201804$clases, p = p201804$pred)
+
+```
+
+## Áreas de riesgo
+
+Las áreas de riesgo tradicionalmente miran como estadístico el KS  (por Kolmogorov-Smirnov) que consiste en una prueba que mide la similitud entre las distribuciones de buenos y malos.
+
+Para este debemos separar las probabilidades de unos y otros
+
+```{r}
+library(ggplot2)
+
+ggplot(p201804$score, aes(x=p)) +
+    facet_grid(clases ~ .,scales = "free_y") +
+     geom_density()
+
+```
+
+Las diferencias entre las dos distribuciones se miden buscando la diferencia máxima entre las distribuciones acumuladas. Para calcularlo vamos a dividir la probabilidad calculada en 20 bucket y calcular la separación entre cada distribución. La máxima separación será nuestro KS (multiplicado por 100 al mencionarlo)
+
+```{r}
+facum_bajas2 <- ecdf(p201804$score[clases == 1, p])
+facum_nobajas2 <- ecdf(p201804$score[clases == 0, p])
+
+q <-
+  quantile(
+    p201804$score$p,
+    probs = seq(0, 1, by = 0.05),
+    names = FALSE
+  )
+
+ksplot <- rbind(data.frame(p = sapply(q, facum_bajas2), clase = 1, q),
+                data.frame(p = sapply(q, facum_nobajas2), clase = 0, q))
+
+ggplot(ksplot, aes(x = factor(signif(q, digits = 4)), y = p)) +
+  geom_point(aes(colour = factor(clase)), size = 1.5) +
+  geom_line(aes(colour = factor(clase), group = factor(clase))) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+Donde la máxima separación es
+
+```{r}
+
+ks_dt <-
+  data.table(bin = 1:length(q),
+             q = q,
+             ks = 100 * abs((
+               sapply(q, function (q)
+                 facum_bajas2(q) - facum_nobajas2(q))
+             )))
+
+ks_dt
+
+```
+```{r}
+
+ks_dt[ks==max(ks),]
+
+```
+
+## Métricas de negocio
+
+Acercar los resultados de los modelos y su utilización al negocio es casi un arte. Veamos a continuación algunas métricas que le muestran al negocio como ver la mejora del modelo.
+
+### Ganancia (captura) acumulada
+
+Porcentaje de clientes que se van a ir que capturamos si elegimos al porcentaje `X` de los clientes con mayor probabilidad en nuestro modelo de propensión.
+
+Vamos a tomar como ejemplo, que vamos a evaluar a solo el mejor `5%`, o lo que es lo mismo, el primer `semidecil`:
+
+```{r}
+library(Hmisc)
+
+p201804$score$bin <- as.integer(cut2(p201804$score$p, g=20))
+p201804$score$bin <-  (21 - p201804$score$bin)*5
+
+setorder(p201804$score, bin, p)
+
+```
+
+
+```{r}
+total_bajas <- sum(p201804$clases)
+
+captura_acum <- p201804$score[, .(captura = sum(clases)) , by = bin]
+captura_acum[, captura_acum := cumsum(captura)]
+captura_acum[, captura_acum_porc := (captura_acum / total_bajas) * 100]
+captura_acum <- rbindlist(list(
+  data.table(
+    bin = 0,
+    captura = 0,
+    captura_acum = 0,
+    captura_acum_porc = 0
+  ),
+  captura_acum
+))
+
+captura_acum
+
+ggplot(captura_acum, aes(x = bin, y = captura_acum_porc))+
+  geom_point(size = 1.5)+
+  geom_line()
+
+```
+
+### Lift acumulado
+
+El lift muestra la mejora sobre el porcentaje por defecto de la clase. Esta es una de las métricas más usadas que complementa el `auc`
+
+```{r}
+
+ratio_clase <- total_bajas / length(p201804$clases)
+
+lift_acum <- p201804$score[, .(captura = sum(clases), n=.N) , by = bin]
+lift_acum[, c("captura_acum", "n_acum") := list(cumsum(captura),cumsum(n))]
+lift_acum[, lift_acum := (captura_acum / n_acum) / ratio_clase]
+
+lift_acum
+
+ggplot(lift_acum, aes(x = bin, y = lift_acum))+
+  geom_point(size = 1.5)+
+  geom_line() + geom_hline(yintercept = 1)
+
+```
+
+### Respuesta acumulada
+
+Nos sirve para ver que porcentaje de clientes que se van a abordar, corresponden al `target`.
+
+```{r}
+
+
+resp_acum <- p201804$score[, .(captura = sum(clases), n=.N) , by = bin]
+resp_acum[, c("captura_acum", "n_acum") := list(cumsum(captura),cumsum(n))]
+resp_acum[, resp_acum := (captura_acum / n_acum)*100]
+
+resp_acum
+
+ggplot(resp_acum, aes(x = bin, y = resp_acum))+
+  geom_point(size = 1.5)+
+  geom_line() + geom_hline(yintercept = ratio_clase*100)
+
+```
+
+Las métricas anteriores tienen su versión no acumulada. Pero como la importancia de negocio se se focalizada en los porcentajes de clientes que se van a abordar, es más útil ver las curvas acumuladas para tomar una decisión.
+
+### Profit 
+
+Como recordatorio, es importante tener presente que el cálculo de ganancia depende de la matriz de profit, que se compone de los `tp`, `fp`, `tn` y `fn`. En el problema que estamos trabajando, sólo usamos los primeros dos valores, pero no siempre esto es así.
+
+## Extra - aproximación del punto de corte.
+
+Como un adicional a la clase de hoy, vamos a estudiar un poco más la búsqueda del punto de corte. **NO** vamos a encontrar cuál es el mejor, pero nos interiorizaremos un poco más en su búsqueda.
+
+Primero veamos para el modelo sobre el que estuvimos trabajando sus métricas correspondientes:
+
+```{r}
+
+library(ROCR)
+
+metricas <-
+  function (probabilidades,
+            clases,
+            punto_corte = 0.025,
+            curva_ganancia = TRUE,
+            rango_curva = c(0.002, 0.15),
+            paso_curva = 0.001) {
+    resultado <- list()
+    
+    
+    roc <-  ROCR::prediction(probabilidades,
+                             clases,
+                             label.ordering = c(0, 1))
+    resultado$auc <- unlist(ROCR::performance(roc, "auc")@y.values)
+    
+    dt_temp <- data.table(probabilidades, clases)
+    
+    dt_temp[, v := ifelse(clases == 1, 19500,-500)]
+    
+    resultado$captura <-
+      dt_temp[probabilidades > punto_corte, sum(clases)] / dt_temp[, sum(clases)]
+    
+    resultado$ganancia <-
+      dt_temp[probabilidades > punto_corte, sum(v)]
+    
+    if (curva_ganancia) {
+      dt_temp2 <- dt_temp[, .(gan = sum(v)), by = probabilidades]
+      
+      setorder(dt_temp2, -probabilidades)
+      
+      dt_temp2[, ganancia := cumsum(gan)]
+      
+      resultado$curva$max_ganancia <-
+        dt_temp2[max(ganancia) == ganancia, ganancia]
+      
+      resultado$curva$mejor_punto_corte <-
+        dt_temp2[max(ganancia) == ganancia, probabilidades]
+      
+      x <-
+        seq(from = rango_curva[1],
+            to = rango_curva[2],
+            by = paso_curva)
+      y <-
+        sapply(x, function(x)
+          dt_temp[probabilidades > x, sum(v)])
+      
+      resultado$curva$graph <- data.table(x, y)
+      
+      
+      resultado$curva$captura <-
+        dt_temp[probabilidades > resultado$curva$mejor_punto_corte, sum(clases)] /
+        dt_temp[, sum(clases)]
+      
+    }
+    
+    resultado
+  }
+
+m1 <- metricas(p201804$pred, p201804$clases)
+```
+
+Vemos su ganancia para el punto de corte estándar `0.025`:
+
+```{r}
+
+m1$ganancia
+
+```
+
+Y cuales son los valores óptimos para el periodo `201804`:
+
+```{r}
+
+m1$curva$max_ganancia
+m1$curva$mejor_punto_corte
+
+```
+
+Vemos que el punto de corte está un poco corrido a la izquierda. 
+
+```{r}
+ggplot(m1$curva$graph, aes(x,y)) +
+  geom_line() + 
+  geom_vline(xintercept = m1$curva$mejor_punto_corte, show.legend = "óptimo", linetype = "dashed") + 
+  geom_vline(xintercept = 0.025, show.legend = "estándar") 
+```
+
+Para no tomar un solo buen punto de corte, vamos a aplicar la técnica `Bootstrapping` para estudiar de forma más robusta nuestro punto de corte:
+
+```{r}
+library(boot)
+
+fun1 <- function(data, indices) {
+  m <- metricas(data$p[indices], data$clases[indices])
+  return(m$curva$mejor_punto_corte)
+}
+
+set.seed(vsemillas[1])
+results <- boot(data=p201804$score, 
+                statistic=fun1, 
+                R=50, 
+                strata=p201804$score$clases)
+
+results
+plot(results)
+
+mean(results$t)
+median(results$t)
+```
+
+Y por último vemos cúal es la ganancia para nuestro nuevo punto de corte:
+
+```{r}
+m2 <- metricas(p201804$pred, p201804$clases, punto_corte = 0.02)
+
+m2$ganancia
+```
+
+Que da superior a la ganancia en `0.025`.
+
+* ¿Conclusiones?
+* ¿Qué otras alternativas pueden usarse para _estudiar_ el punto de corte más adecuado?
+
