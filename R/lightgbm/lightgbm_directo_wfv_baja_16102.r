@@ -46,7 +46,7 @@ env$directory <- directory
 env$experimento          <-  16102
 env$procesar_solo_201904 <-  FALSE
 
-env$undersampling        <-  0.1
+env$undersampling        <-  1.0
 
 
 #Parametros entrada de nuestro dataset
