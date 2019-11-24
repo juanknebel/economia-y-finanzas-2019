@@ -48,7 +48,7 @@ data$campo_id             <-  "numero_de_cliente"
 data$clase_nomcampo       <-  "clase_ternaria"
 data$clase_valor_positivo <-  "BAJA+2"
 data$campos_a_borrar      <-  c()
-data$archivo_grande       <-  "paquete_premium_dias.txt"
+data$archivo_grande       <-  "paquete_premium_exthist.txt.gz"
 data$mes_futuro_test      <-  1 + 2
 data$mes_futuro_train     <-  1 + 2 + 2
 data$mes_actual_test      <-  1 + 2 + 2
