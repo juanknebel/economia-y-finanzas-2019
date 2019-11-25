@@ -56,21 +56,21 @@ dead_line = function(month_to_process) {
   #grabo todas las probabilidad, simplemente para tenerlo
   setwd(  "~/cloud/cloud1/work/")
   fwrite(prediccion_final[ order( -prob_positivo) ], 
-         file=paste0(nombre_archivo,"_probabilidades.txt"), 
+         file=paste0(nombre_archivo, "_", month_to_process, "_probabilidades.txt"), 
          sep="\t", 
          eol = "\r\n")
 
   #Ahora grabo la salida que debo entregar en la materia, que son solamente los ids
   #me quedo solamente con los numero_de_cliente donde probabilidad > 0.025
   fwrite(as.data.table( prediccion_final[ prob_positivo > 0.025  , "numero_de_cliente" ] ), 
-         file=paste0(nombre_archivo,"_entregar.txt"), 
+         file=paste0(nombre_archivo, "_", month_to_process, "_entregar.txt"), 
          col.names=FALSE, 
          sep="\t", 
          eol = "\r\n")
 
   #grabo la importancia de las variables
   write.table(lgb.importance( model = modelo ),
-              file=paste0(nombre_archivo,"_importancia.txt"),
+              file=paste0(nombre_archivo, "_", month_to_process, "_importancia.txt"),
               sep="\t",
               eol = "\r\n")
 
