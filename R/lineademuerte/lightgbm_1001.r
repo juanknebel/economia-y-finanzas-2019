@@ -56,21 +56,21 @@ dead_line = function(month_to_process) {
   #grabo todas las probabilidad, simplemente para tenerlo
   setwd(  "~/cloud/cloud1/work/")
   fwrite(prediccion_final[ order( -prob_positivo) ], 
-         file=paste0(nombre_archivo, "_", month_to_process, "_probabilidades.txt"), 
+         file=paste0(file_name, "_", month_to_process, "_probabilidades.txt"), 
          sep="\t", 
          eol = "\r\n")
 
   #Ahora grabo la salida que debo entregar en la materia, que son solamente los ids
   #me quedo solamente con los numero_de_cliente donde probabilidad > 0.025
   fwrite(as.data.table( prediccion_final[ prob_positivo > 0.025  , "numero_de_cliente" ] ), 
-         file=paste0(nombre_archivo, "_", month_to_process, "_entregar.txt"), 
+         file=paste0(file_name, "_", month_to_process, "_entregar.txt"), 
          col.names=FALSE, 
          sep="\t", 
          eol = "\r\n")
 
   #grabo la importancia de las variables
-  write.table(lgb.importance( model = modelo ),
-              file=paste0(nombre_archivo, "_", month_to_process, "_importancia.txt"),
+  write.table(lgb.importance( model = the_model ),
+              file=paste0(file_name, "_", month_to_process, "_importancia.txt"),
               sep="\t",
               eol = "\r\n")
 
@@ -81,12 +81,14 @@ dead_line = function(month_to_process) {
     actual_profit = data.table( month = c(predict_month), profit = c(the_profit) )
     current_profits = rbind(current_profits, actual_profit)
     fwrite(current_profits,
-           file=paste0(nombre_archivo,"_ganancias_actuales.txt"),
+           file=paste0(file_name,"_ganancias_actuales.txt"),
            sep="\t",
            eol = "\r\n")
     # Si la ganancia de este mes actual no fue mejor que la calculada por el teacher paro la ejecucion
-    if (profit < profits_to_compare[mont == predict_month, "profit"]) {
-      stop("La ganancia no super el umbral")
+    threshold_profit = profits_to_compare[month == predict_month, "profit"]
+    if (the_profit < ) {
+      message = paste0("La ganancia no supera el umbral", "\nGanancia actual: ", the_profit, "\nGanancia del umbral: ", threshold_profit)
+      stop(message)
     }
   }
 }
@@ -94,10 +96,10 @@ dead_line = function(month_to_process) {
 #------------------------------------
 setwd( "~/cloud/cloud1/datasets/")
 dataset <- fread( "paquete_premium_exthist.txt.gz" )
-#dataset <- fread( "~/git/economia-y-finanzas-2019/datasetsOri/paquete_reducido2.csv" )
+#dataset <- fread( "~/git/economia-y-finanzas-2019/datasets/paquete_reducido2.csv" )
 file_name = "lightgbm_dead_line_1001"
 from = 201806
-to = 201906
+to = 201904
 competition_month = 201906
 
 profits_to_compare = data.table(
@@ -124,6 +126,8 @@ dataset[  , clase_ternaria := as.integer(clase_ternaria=="BAJA+2") ]
 
 # Selección de los meses a procesar
 meses_a_procesar <- tb_meses[  foto_mes>=from  & foto_mes<=to, foto_mes ]
+
+dead_line(competition_month)
 
 # Aplico la función a la lista de meses
 lapply( meses_a_procesar, dead_line )
