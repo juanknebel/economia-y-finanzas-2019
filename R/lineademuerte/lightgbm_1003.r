@@ -20,25 +20,26 @@ dead_line = function(month_to_process) {
 
   set.seed( 209809 )
 
-  # Experimento 15102, parametros que mejoraron la aplicacion del 201812
-  # ventana=10, num_iterations=234, learning_rate=0.0312333063004899, 
-  # lambda_l1=2.158687029958, lambda_l2=24.0638346686878, min_gain_to_split=5.73189822288883, 
-  # min_data_in_leaf=48, max_depth=18, feature_fraction=0.649719144998474, max_bin=255, subsample=1
+  # Experimento 15102, parametros que mejoraron la aplicacion del 201904
+  # ventana=10, num_iterations=242, learning_rate=0.0356115508402127, 
+  # lambda_l1=1.01611162017843, lambda_l2=31.7275156188586, min_gain_to_split=1.7403726139306, 
+  # min_data_in_leaf=27, max_depth=13, feature_fraction=0.551845921032418, max_bin=255, subsample=1
+
 
   the_model = lgb.train( 
     data = degeneracion,
     objective = "binary",
     metric="auc",
     seed= 209809,
-    num_iterations=234, 
+    num_iterations=242, 
     boost_from_average=FALSE,
     bagging_fraction=1, 
-    feature_fraction=0.6497, 
-    learning_rate=0.0312, 
+    feature_fraction=0.5518, 
+    learning_rate=0.0356, 
     min_child_weight=8, 
-    max_depth=18, 
-    lambda_l1=2.1586,
-    lambda_l2=24.0638,
+    max_depth=13, 
+    lambda_l1=1.0161,
+    lambda_l2=31.7275,
     max_bin=255, 
     num_leaves=255)
 
@@ -88,7 +89,7 @@ dead_line = function(month_to_process) {
     threshold_profit = profits_to_compare[month == predict_month, "profit"]
     if (the_profit < threshold_profit) {
       message = paste0("La ganancia no supera el umbral", "\nGanancia actual: ", the_profit, "\nGanancia del umbral: ", threshold_profit)
-      stop(message)
+      # stop(message)
     }
   }
 }
@@ -97,7 +98,7 @@ dead_line = function(month_to_process) {
 setwd( "~/cloud/cloud1/datasets/")
 dataset <- fread( "paquete_premium_exthist.txt.gz" )
 #dataset <- fread( "~/git/economia-y-finanzas-2019/datasets/paquete_reducido2.csv" )
-file_name = "lightgbm_dead_line_1001"
+file_name = "lightgbm_dead_line_1003"
 from = 201806
 to = 201904
 competition_month = 201906

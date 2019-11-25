@@ -20,25 +20,26 @@ dead_line = function(month_to_process) {
 
   set.seed( 209809 )
 
-  # Experimento 15102, parametros que mejoraron la aplicacion del 201812
-  # ventana=10, num_iterations=234, learning_rate=0.0312333063004899, 
-  # lambda_l1=2.158687029958, lambda_l2=24.0638346686878, min_gain_to_split=5.73189822288883, 
-  # min_data_in_leaf=48, max_depth=18, feature_fraction=0.649719144998474, max_bin=255, subsample=1
+  # Experimento 17102, parametros que mejoraron la aplicacion del 201904
+  # ventana=10, probcorte=0.0265663267316982, num_iterations=136, learning_rate=0.070930525958177,
+  # lambda_l1=3.79928058833683, lambda_l2=40.5080674981905, min_gain_to_split=2.81291225924544, 
+  # min_data_in_leaf=9, max_depth=10, feature_fraction=0.923458889881212, max_bin=255, subsample=1
+
 
   the_model = lgb.train( 
     data = degeneracion,
     objective = "binary",
     metric="auc",
     seed= 209809,
-    num_iterations=234, 
+    num_iterations=136, 
     boost_from_average=FALSE,
     bagging_fraction=1, 
     feature_fraction=0.6497, 
-    learning_rate=0.0312, 
+    learning_rate=0.0709, 
     min_child_weight=8, 
     max_depth=18, 
-    lambda_l1=2.1586,
-    lambda_l2=24.0638,
+    lambda_l1=3.7992,
+    lambda_l2=40.5080,
     max_bin=255, 
     num_leaves=255)
 
@@ -97,7 +98,7 @@ dead_line = function(month_to_process) {
 setwd( "~/cloud/cloud1/datasets/")
 dataset <- fread( "paquete_premium_exthist.txt.gz" )
 #dataset <- fread( "~/git/economia-y-finanzas-2019/datasets/paquete_reducido2.csv" )
-file_name = "lightgbm_dead_line_1001"
+file_name = "lightgbm_dead_line_1002"
 from = 201806
 to = 201904
 competition_month = 201906
