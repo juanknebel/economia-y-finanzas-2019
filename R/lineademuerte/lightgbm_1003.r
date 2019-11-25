@@ -84,7 +84,8 @@ dead_line = function(month_to_process) {
     fwrite(current_profits,
            file=paste0(file_name,"_ganancias_actuales.txt"),
            sep="\t",
-           eol = "\r\n")
+           eol = "\r\n",
+           append = TRUE)
     # Si la ganancia de este mes actual no fue mejor que la calculada por el teacher paro la ejecucion
     threshold_profit = profits_to_compare[month == predict_month, "profit"]
     if (the_profit < threshold_profit) {
