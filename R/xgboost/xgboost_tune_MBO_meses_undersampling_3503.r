@@ -49,7 +49,7 @@ data$campo_id             <-  "numero_de_cliente"
 data$clase_nomcampo       <-  "clase_ternaria"
 data$clase_valor_positivo <-  "BAJA+2"
 data$campos_a_borrar      <-  c()
-data$archivo_grande       <-  "paquete_premium_exthist.txt"
+data$archivo_grande       <-  "paquete_premium_exthist.txt.gz"
 data$mes_futuro_test      <-  1 + 2
 data$mes_futuro_train     <-  1 + 2 + 2
 data$mes_actual_test      <-  1 + 2 + 2
@@ -563,7 +563,12 @@ agregar_canaritos <- function( pdataset,  pcanaritos_cantidad )
 
 #cargo los archivos de entrada
 setwd( env$directory$datasets)
-dataset_grande   <- fread(cmd=paste("cat", env$data$archivo_grande))
+if( env$data$archivo_grande %like% "gz" ) 
+{
+  dataset_grande   <- fread(env$data$archivo_grande)
+} else {
+  dataset_grande   <- fread(cmd=paste("cat", env$data$archivo_grande))
+}
 
 dataset_grande <- dataset_grande[ foto_mes>=env$data$mes_primero  & foto_mes<=env$data$mes_ultimo, ]
 gc()

@@ -3,6 +3,8 @@ options(Ncpus = 4)
 
 update.packages( ask=FALSE  )
 
+install.packages("data.table", dependencies = TRUE)
+install.packages("devtools", dependencies = TRUE)
 install.packages('R.utils', dependencies = TRUE)
 install.packages('rpart.plot', dependencies = TRUE)
 install.packages('xgboost', dependencies = TRUE)
@@ -15,6 +17,7 @@ install.packages('DiagrammeRsvg', dependencies = TRUE)
 install.packages('DiagrammeR', dependencies = TRUE)
 
 install.packages('iml', dependencies = TRUE)
+install.packages("ROCR")
 
 library( devtools )
 install_github("AppliedDataSciencePartners/xgboostExplainer")

@@ -563,7 +563,12 @@ agregar_canaritos <- function( pdataset,  pcanaritos_cantidad )
 
 #cargo los archivos de entrada
 setwd( env$directory$datasets)
-dataset_grande   <- fread(env$data$archivo_grande)
+if( env$data$archivo_grande %like% "gz" ) 
+{
+  dataset_grande   <- fread(env$data$archivo_grande)
+} else {
+  dataset_grande   <- fread(cmd=paste("cat", env$data$archivo_grande))
+}
 
 dataset_grande <- dataset_grande[ foto_mes>=env$data$mes_primero  & foto_mes<=env$data$mes_ultimo, ]
 gc()
