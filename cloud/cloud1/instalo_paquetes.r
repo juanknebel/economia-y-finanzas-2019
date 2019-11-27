@@ -18,6 +18,7 @@ install.packages('DiagrammeR', dependencies = TRUE)
 
 install.packages('iml', dependencies = TRUE)
 install.packages("ROCR")
+install.packages("janitor")
 
 library( devtools )
 install_github("AppliedDataSciencePartners/xgboostExplainer")
