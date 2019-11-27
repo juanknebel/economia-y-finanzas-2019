@@ -56,7 +56,9 @@ dead_line = function(month_to_process) {
   #Genero las TRES salidas default para todos los meses
   #grabo todas las probabilidad, simplemente para tenerlo
   setwd(  "~/cloud/cloud1/work/")
-  fwrite(prediccion_final[ order( -prob_positivo) ], 
+  probabilities = prediccion_final[ order( -prob_positivo) ]
+  probabilities[, (c("foto_mes")) := predict_month]
+  fwrite(probabilities, 
          file=paste0(file_name, "_", month_to_process, "_probabilidades.txt"), 
          sep="\t", 
          eol = "\r\n")
@@ -97,9 +99,8 @@ dead_line = function(month_to_process) {
 #------------------------------------
 setwd( "~/cloud/cloud1/datasets/")
 dataset <- fread( "paquete_premium_exthist.txt.gz" )
-#dataset <- fread( "~/git/economia-y-finanzas-2019/datasets/paquete_reducido2.csv" )
 file_name = "lightgbm_dead_line_1004"
-from = 201806
+from = 201706
 to = 201904
 competition_month = 201906
 # La probabilidad default de corte

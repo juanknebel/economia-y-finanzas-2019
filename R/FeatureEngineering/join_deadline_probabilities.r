@@ -2,6 +2,7 @@ library(data.table)
 library(tidyverse)
 library(janitor)
 
+## ----------- Preprocesamiento en caso de ser necesario ----------- ##
 # Solo en caso de que los archivos esten separados antes deben ser unidos
 setwd("~/cloud/cloud1/work/1004/")
 #setwd("~/git/economia-y-finanzas-2019/datasets/")
@@ -40,12 +41,13 @@ fwrite(lm_final,
        file="lightgbm_dead_line_1004_probabilidades.txt",
        sep="\t")
 
+## ----------- Aca comienza el join de atributos ----------- ##
 setwd("~/cloud/cloud1/datasets/")
-lm_original <- fread("ldm_probabilidades_consolida_orig.txt")
+lm_original <- fread("lightgbm_dead_line_1004_all_probabilities")
 exthist <- fread("paquete_premium_exthist.txt.gz")
 
 #setwd("~/git/economia-y-finanzas-2019/datasets/")
-#lm_original <- fread("lightgbm_dead_line_1004_probabilidades.txt")
+#lm_original <- fread("lightgbm_dead_line_1004_all_probabilities")
 #exthist <- fread("paquete_reducido2.csv")
 
 dim(lm_original)

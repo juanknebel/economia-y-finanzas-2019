@@ -6,6 +6,7 @@ library( "data.table" )
 library( "xgboost" )
 
 dead_line = function(month_to_process) {
+  gc()
   future = as.numeric(tb_meses[foto_mes == month_to_process, mes])
   end = as.numeric(future+2)
   start = as.numeric(end+9)
@@ -19,15 +20,20 @@ dead_line = function(month_to_process) {
 
   set.seed( 209809 )
 
+  # Experimento 3503
+  # ventana=12, nround=91, eta=0.104121124040168, alpha=0.739681916013346, lambda=9.56613414973228, 
+  # gamma=3.48483746864684, min_child_weight=20.578664275836, max_depth=16, colsample_bytree=0.810970026351647, 
+  # max_bin=31, subsample=1
+  
   the_model = xgb.train( 
     data= dgeneracion,
     objective= "binary:logistic",
     tree_method= "hist",
     max_bin= 31,
     base_score= mean( getinfo(dgeneracion, "label") ),
-    eta= 0.04,
+    eta= 0.1041,
     nrounds= 300, 
-    colsample_bytree= 0.6
+    colsample_bytree= 0.8109
   )
 
   #aplico el modelo a datos nuevos
@@ -44,7 +50,9 @@ dead_line = function(month_to_process) {
   #Genero las TRES salidas default para todos los meses
   #grabo todas las probabilidad, simplemente para tenerlo
   setwd(  "~/cloud/cloud1/work/")
-  fwrite(prediccion_final[ order( -prob_positivo) ], 
+  probabilities = prediccion_final[ order( -prob_positivo) ]
+  probabilities[, (c("foto_mes")) := predict_month]
+  fwrite(probabilities, 
          file=paste0(file_name, "_", month_to_process, "_probabilidades.txt"), 
          sep="\t", 
          eol = "\r\n")
@@ -58,7 +66,7 @@ dead_line = function(month_to_process) {
          eol = "\r\n")
 
   #grabo la importancia de las variables
-  write.table(lgb.importance( model = the_model ),
+  write.table(xgb.importance( model = the_model ),
               file=paste0(file_name, "_", month_to_process, "_importancia.txt"),
               sep="\t",
               eol = "\r\n")
@@ -85,9 +93,8 @@ dead_line = function(month_to_process) {
 #------------------------------------
 setwd( "~/cloud/cloud1/datasets/")
 dataset <- fread( "paquete_premium_exthist.txt.gz" )
-#dataset <- fread( "~/git/economia-y-finanzas-2019/datasets/paquete_reducido2.csv" )
 file_name = "xgboost_dead_line_2001"
-from = 201806
+from = 201706
 to = 201904
 competition_month = 201906
 # La probabilidad default de corte
