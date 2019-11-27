@@ -93,7 +93,7 @@ dataset <- fread( "paquete_premium_exthist.txt.gz" )
 #dataset <- fread( "~/git/economia-y-finanzas-2019/datasets/paquete_reducido2.csv" )
 file_name = "lightgbm_dead_line_1004_extra"
 from = 201706
-to = 201804
+to = 201806
 # La probabilidad default de corte
 # prob_class_down = 0.025
 prob_class_down = 0.0265
