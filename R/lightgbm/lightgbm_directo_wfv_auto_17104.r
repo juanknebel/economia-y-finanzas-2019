@@ -42,7 +42,7 @@ switch (Sys.info()[['sysname']],
 env$directory <- directory
 
 
-env$experimento          <-  17102
+env$experimento          <-  17104
 env$procesar_solo_201904 <-  FALSE
 
 env$undersampling        <-  0.1
