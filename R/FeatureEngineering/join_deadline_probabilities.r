@@ -43,11 +43,11 @@ fwrite(lm_final,
 
 ## ----------- Aca comienza el join de atributos ----------- ##
 setwd("~/cloud/cloud1/datasets/")
-lm_original <- fread("lightgbm_dead_line_1004_all_probabilities")
+lm_original <- fread("lightgbm_dead_line_1004_all_probabilities.txt")
 exthist <- fread("paquete_premium_exthist.txt.gz")
 
 #setwd("~/git/economia-y-finanzas-2019/datasets/")
-#lm_original <- fread("lightgbm_dead_line_1004_all_probabilities")
+#lm_original <- fread("lightgbm_dead_line_1004_all_probabilities.txt")
 #exthist <- fread("paquete_reducido2.csv")
 
 dim(lm_original)

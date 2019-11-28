@@ -17,8 +17,9 @@ install.packages('DiagrammeRsvg', dependencies = TRUE)
 install.packages('DiagrammeR', dependencies = TRUE)
 
 install.packages('iml', dependencies = TRUE)
-install.packages("ROCR")
-install.packages("janitor")
+install.packages("ROCR", dependencies = TRUE)
+install.packages("janitor", dependencies = TRUE)
+install.packages("tidyverse", dependencies = TRUE)
 
 library( devtools )
 install_github("AppliedDataSciencePartners/xgboostExplainer")
