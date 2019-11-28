@@ -100,7 +100,7 @@ dead_line = function(month_to_process) {
 #------------------------------------
 setwd( "~/cloud/cloud1/datasets/")
 dataset <- fread( "paquete_premium_exthist_lm_original.txt.gz" )
-file_name = "lightgbm_dead_line_1004"
+file_name = "lightgbm_dead_line_1006"
 from = 201706
 to = 201904
 competition_month = 201906
