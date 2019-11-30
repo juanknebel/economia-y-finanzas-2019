@@ -37,8 +37,8 @@ switch (Sys.info()[['sysname']],
                      directory$datasets <-  "~/dm/datasets/dias/"
                    },
          Linux   = { 
-                     directory$work     <-  "~/cloud/cloud1/work/"
-                     directory$datasets <-  "~/cloud/cloud1/datasets/"
+                     directory$work     <-  "~/azure/cloud1/work/"
+                     directory$datasets <-  "~/azure/cloud1/datasets/"
                    }
        )
 env$directory <- directory
@@ -52,7 +52,7 @@ data$campo_id             <-  "numero_de_cliente"
 data$clase_nomcampo       <-  "clase_ternaria"
 data$clase_valor_positivo <-  "BAJA+2"
 data$campos_a_borrar      <-  c()
-data$archivo_grande       <-  "paquete_premium_exthist.txt.gz"
+data$archivo_grande       <-  "paquete_premium_hist.txt.gz"
 data$undersampling        <-   0.2
 data$ventana              <-  10
 env$data <- data
@@ -201,7 +201,7 @@ generar_y_aplicar_modelos  <- function( )
   }
   
   dataset_grande[ , train:= NULL ]
-  
+  gc()
 }
 #------------------------------------------------------------------------------
 
@@ -256,7 +256,7 @@ for( plearning_rate  in c( 0.3, 0.03 ) )
     for( pmin_data_in_leaf  in c( 1, 100 ) )
     {
       z$min_data_in_leaf  <- pmin_data_in_leaf
-      for( pfeature_fraction  in c( 0.5) )
+      for( pfeature_fraction  in c( 0.5, 1.0) )
       {
         z$feature_fraction <- pfeature_fraction
         tb_modelos <-  rbind( tb_modelos,  z )

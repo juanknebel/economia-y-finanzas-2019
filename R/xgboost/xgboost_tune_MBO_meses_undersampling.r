@@ -70,7 +70,7 @@ env$mbo <- mbo
 #sobre el funcionamiento de programa
 #en el XGboost
 xgb <- list()
-xgb$semilla               <- 209743
+xgb$semilla               <- 102191
 xgb$max_bin               <-     31
 xgb$subsample             <-      1.0
 xgb$nround_max            <-   1000
@@ -454,8 +454,8 @@ modelo_xgboost_ganancia_MBO_directo <- function( x )
                             )
 
 
-
-  dfuturo_train <-   xgb.DMatrix( data  = data.matrix(   dataset_grande[(sample < env$undersampling | clase_ternaria==1) & mes<=(env$data$mes_futuro_train+x$pventana-1)  &  mes>=env$data$mes_futuro_train & mes!=env$data$mes_futuro_test,
+ #Aqui esta el error,  en el futuro NO se hace UNDERSAMPLING
+  dfuturo_train <-   xgb.DMatrix( data  = data.matrix(   dataset_grande[ mes<=(env$data$mes_futuro_train+x$pventana-1)  &  mes>=env$data$mes_futuro_train & mes!=env$data$mes_futuro_test,
                                                                        !c("sample",env$data$campo_id, env$data$clase_nomcampo), 
                                                                        with=FALSE]),
                                   label = dataset_grande[ (sample < env$undersampling | clase_ternaria==1) & mes<=(env$data$mes_futuro_train+x$pventana-1)  &  mes>=env$data$mes_futuro_train & mes!=env$data$mes_futuro_test,
@@ -549,7 +549,7 @@ agregar_canaritos <- function( pdataset,  pcanaritos_cantidad )
   vcanaritos <-  paste0( "canarito", 1:pcanaritos_cantidad )
 
   #uso esta semilla para los canaritos
-  set.seed(209789)
+  set.seed(10219)
 
   pdataset[ , (vcanaritos) := 0 ]
   pdataset[ , (vcanaritos) := lapply(.SD, runif), .SDcols = vcanaritos]
@@ -563,12 +563,7 @@ agregar_canaritos <- function( pdataset,  pcanaritos_cantidad )
 
 #cargo los archivos de entrada
 setwd( env$directory$datasets)
-if( env$data$archivo_grande %like% "gz" ) 
-{
-  dataset_grande   <- fread(env$data$archivo_grande)
-} else {
-  dataset_grande   <- fread(cmd=paste("cat", env$data$archivo_grande))
-}
+dataset_grande   <- fread(cmd=paste("cat", env$data$archivo_grande))
 
 dataset_grande <- dataset_grande[ foto_mes>=env$data$mes_primero  & foto_mes<=env$data$mes_ultimo, ]
 gc()
@@ -576,7 +571,7 @@ gc()
 #Borro campos
 if( length(env$data$campos_a_borrar)>0 )  dataset_grande[ ,  (env$data$campos_a_borrar) := NULL    ] 
 
-set.seed(209743)
+set.seed(410551)
 #agrego variable para el undersampling
 dataset_grande[ ,  sample :=  runif( nrow(dataset_grande) )]
 
