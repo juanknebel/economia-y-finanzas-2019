@@ -35,7 +35,7 @@ switch (Sys.info()[['sysname']],
 env$directory <- directory
 
 
-env$experimento          <-  15002
+env$experimento          <-  950
 env$procesar_solo_201904 <-  FALSE
 
 env$undersampling        <-  0.1
@@ -48,14 +48,23 @@ data$campo_foto           <-  "foto_mes"
 data$campo_id             <-  "numero_de_cliente"
 data$clase_nomcampo       <-  "clase_ternaria"
 data$clase_valor_positivo <-  "BAJA+2"
-data$campos_a_borrar      <-  c()
-data$archivo_grande       <-  "paquete_premium_hist.txt.gz"
+data$campos_a_borrar      <-  c("ttarjeta_visa_debitos_automaticos", 
+                                "ttarjeta_visa_debitos_automaticos__min",
+                                "ttarjeta_visa_debitos_automaticos__max",
+                                "ttarjeta_visa_debitos_automaticos__tend",
+                                "chomebanking_transacciones",
+                                "chomebanking_transacciones__min",
+                                "chomebanking_transacciones__max",
+                                "chomebanking_transacciones__tend"
+                               )
+                               
+data$archivo_grande       <-  "paquete_premium_lag.txt.gz"
 env$data <- data
 
 
 #Parametros  mlrMBO   Optimizacion Bayesiana
 mbo <- list()
-mbo$iteraciones       <-  100   # cuantas iteraciones hace la Optimicacion Bayesiana
+mbo$iteraciones       <-  100   # cuantas iteraciones hace la Optimizacion Bayesiana
 mbo$saveondisk_time   <-  600   # cada 600 segundos guarda a disco cuanto avanzo
 env$mbo <- mbo
 
@@ -63,11 +72,11 @@ env$mbo <- mbo
 #en el lightgbm
 lgb <- list()
 lgb$semilla               <- 102191
-lgb$max_bin               <-    255
+lgb$max_bin               <-     31
 lgb$subsample             <-      1.0
 lgb$num_iterations_max    <-   1000
-lgb$early_stopping_round  <-     30
-lgb$num_leaves            <-   1024
+lgb$early_stopping_round  <-    100
+lgb$num_leaves            <-   2048
 env$lightgbm <- lgb
 
 
@@ -340,11 +349,11 @@ modelo_lightgbm_futuro <- function( ptrain, ptest, ptest_clase, pclase_nomcampo,
                "importancia"=tb_importancia ) )
 }
 #------------------------------------------------------------------------------
-x <- list( pventana=12, pfeature_fraction=0.7, plearning_rate=0.1, plambda_l1=0.1, plambda_l2=3.0, pmin_gain_to_split=5, pmin_data_in_leaf=10, pmax_depth=20, pnum_iterations=100)
+x <- list( pventana=10, pfeature_fraction=0.6, plearning_rate=0.04, plambda_l1=0.0, plambda_l2=0.0, pmin_data_in_leaf=20, pmax_depth=6)
 
-glob_procesar_futuro   <-  0
-glob_mes_cero          <- 201904
-glob_mes_actual_train  <-  7
+glob_procesar_futuro   <-  1
+glob_mes_cero          <- 201906
+glob_mes_actual_train  <-  5
 glob_ganancia_mejor <- 0
 glob_num_iterations_mejor   <- 0
 glob_mfuturo_ganancia_test <- 0
@@ -383,7 +392,14 @@ modelo_lightgbm_ganancia_MBO_directo <- function( x )
                              pmin_data_in_leaf= x$pmin_data_in_leaf,
                              pmax_depth= x$pmax_depth
                             )
+  if( mactual$ganancia_test >  glob_ganancia_mejor )
+  {
+    glob_ganancia_mejor       <<- mactual$ganancia_test
+    glob_num_iterations_mejor <<- mactual$num_iterations
 
+    cat( "Actual mejor:", mactual$ganancia_test, "\n" )
+  }  
+  cat( "Actual mejor:",  glob_ganancia_mejor, "\n" )
 
   if( glob_procesar_futuro )
   {
@@ -483,7 +499,7 @@ agregar_canaritos <- function( pdataset,  pcanaritos_cantidad )
   vcanaritos <-  paste0( "canarito", 1:pcanaritos_cantidad )
 
   #uso esta semilla para los canaritos
-  set.seed(209789)
+  set.seed(10219)
 
   pdataset[ , (vcanaritos) := 0 ]
   pdataset[ , (vcanaritos) := lapply(.SD, runif), .SDcols = vcanaritos]
@@ -535,14 +551,14 @@ optimizacion_bayesiana <- function( pmes_cero )
              name = "prueba",
              fn   = funcion_optimizar,
              par.set = makeParamSet(
-               makeNumericParam("pfeature_fraction" ,  lower=0.05    , upper=   1.0),
-               makeNumericParam("plearning_rate"    ,  lower=0.0     , upper=   0.3),
-               makeNumericParam("plambda_l1"        ,  lower=0.0     , upper=  50.0),
-               makeNumericParam("plambda_l2"        ,  lower=0.0     , upper=  50.0),
-               makeNumericParam("pmin_gain_to_split",  lower=0.0     , upper=  20.0),
-               makeIntegerParam("pmin_data_in_leaf" ,  lower=0L      , upper= 100L),
-               makeIntegerParam("pmax_depth"        ,  lower=2L      , upper=  20L),
-               makeIntegerParam("pventana"          ,  lower=1L      , upper=  10L)
+               makeNumericParam("pfeature_fraction" ,  lower=0.20    , upper=    1.0),
+               makeNumericParam("plearning_rate"    ,  lower=0.01    , upper=    0.3),
+               makeNumericParam("plambda_l1"        ,  lower=0.0     , upper=   50.0),
+               makeNumericParam("plambda_l2"        ,  lower=0.0     , upper=  100.0),
+               makeNumericParam("pmin_gain_to_split",  lower=0.5     , upper=    5.0),
+               makeIntegerParam("pmin_data_in_leaf" ,  lower=20L      , upper=  200L),
+               makeIntegerParam("pmax_depth"        ,  lower=6L      , upper=   20L),
+               makeIntegerParam("pventana"          ,  lower=5L      , upper=   10L)
               ),
             has.simple.signature = FALSE,
             global.opt.value = -1
@@ -661,7 +677,7 @@ if( length(env$data$campos_a_borrar)>0 )  dataset_grande[ ,  (env$data$campos_a_
 dataset_grande[, (env$data$clase_nomcampo) := as.numeric( get(env$data$clase_nomcampo) == env$data$clase_valor_positivo  )] 
 
 #agrego variable para el undersampling
-set.seed(209743)
+set.seed(410551)
 dataset_grande[ ,  sample :=  runif( nrow(dataset_grande) )]
 
 #agrego las variables canarito
@@ -679,6 +695,8 @@ hiperparametros_crear(env$hiper)
 
 meses_a_procesar  <-   tb_meses[  foto_mes>=201806  & foto_mes<=201904, foto_mes ] 
 if( env$procesar_solo_201904 )  meses_a_procesar= c( 201904 )
+
+setorder( dataset_grande, foto_mes, numero_de_cliente )
 
 #corro una optimizacion bayesiana para cada uno de los meses 201904, 201903, 201902,  ...
 res <- lapply( meses_a_procesar, optimizacion_bayesiana )

@@ -1,7 +1,7 @@
 #Feature Engineering  TODO EN UNO
 #paso las fechas abolutas a dias
 #creo las variables nuevas en cada mes
-#creo TENDENCIA, MAX, MIN   en funcion de los ultimos 6 meses historia para cada variable
+#creo TENDENCIA, MAX, MIN, AVERAGE   en funcion de los ultimos 6 meses historia para cada variable, son moviles
 
 #por eficiencia, la parte critica esta escrita en lenguaje C  
 #ya que R es insoportablemente lento
@@ -53,7 +53,7 @@ cppFunction('NumericVector fhistC(NumericVector pcolumna, IntegerVector pdesde )
   double  y[100] ;
 
   int n = pcolumna.size();
-  NumericVector out( 3*n );
+  NumericVector out( 4*n );
   
 
   for(int i = 0; i < n; i++) 
@@ -82,37 +82,35 @@ cppFunction('NumericVector fhistC(NumericVector pcolumna, IntegerVector pdesde )
     /* Si hay al menos dos valores */
     if( libre > 1 )
     {   
-    double  xsum  = x[0] ;
-        double  ysum  = y[0] ;
-        double  xysum = xsum * ysum ;
-        double  xxsum = xsum * xsum ; 
-        double  vmin  = y[0] ;
-        double  vmax  = y[0] ;
+      double  xsum  = x[0] ;
+      double  ysum  = y[0] ;
+      double  xysum = xsum * ysum ;
+      double  xxsum = xsum * xsum ; 
+      double  vmin  = y[0] ;
+      double  vmax  = y[0] ;
 
-    
-        for( int h=1; h<libre; h++) 
-    { 
-       xsum  += x[h] ; 
-       ysum  += y[h] ; 
-       xysum += x[h]*y[h] ;
-       xxsum += x[h]*x[h] ;
+      for( int h=1; h<libre; h++) 
+      { 
+        xsum  += x[h] ; 
+        ysum  += y[h] ; 
+        xysum += x[h]*y[h] ;
+        xxsum += x[h]*x[h] ;
  
-           if( y[h] < vmin )  vmin = y[h] ;
-           if( y[h] > vmax )  vmax = y[h] ;
+        if( y[h] < vmin )  vmin = y[h] ;
+        if( y[h] > vmax )  vmax = y[h] ;
+      }
 
-    }
-
-        out[ i ]  =  (libre*xysum - xsum*ysum)/(libre*xxsum -xsum*xsum) ; 
-        out[ i + n ]    =  vmin ;
-        out[ i + 2*n ]  =  vmax ;
-
+      out[ i ]  =  (libre*xysum - xsum*ysum)/(libre*xxsum -xsum*xsum) ; 
+      out[ i + n ]    =  vmin ;
+      out[ i + 2*n ]  =  vmax ;
+      out[ i + 3*n ]  =  ysum / libre ;
     }
     else  
     { 
-       out[i] = NA_REAL ; 
-       out[ i + n ]    =  NA_REAL ;
-       out[ i + 2*n ]  =  NA_REAL ;
-
+      out[ i       ]  =  NA_REAL ; 
+      out[ i + n   ]  =  NA_REAL ;
+      out[ i + 2*n ]  =  NA_REAL ;
+      out[ i + 3*n ]  =  NA_REAL ;
     }
 
   }
@@ -256,12 +254,11 @@ for(  campo  in  campos_a_procesar )
    nueva_col     <- fhistC( col_original, vector_desde ) 
 
    #agrego las nuevas columnas al dataset
-   dataset[ , paste( campo, "__tend", sep="" ):= nueva_col[ 1:last ]  ]
-   dataset[ , paste( campo, "__min", sep="" ):= nueva_col[ (last+1):(2*last) ]  ]
-   dataset[ , paste( campo, "__max", sep="" ):= nueva_col[ (2*last+1):(3*last) ]   ]
-
-   
-}  
+   dataset[ , paste( campo, "__tend", sep="" ):= nueva_col[ (0*last +1):(1*last) ]  ]
+   dataset[ , paste( campo, "__min" , sep="" ):= nueva_col[ (1*last +1):(2*last) ]  ]
+   dataset[ , paste( campo, "__max" , sep="" ):= nueva_col[ (2*last +1):(3*last) ]  ]
+   dataset[ , paste( campo, "__avg" , sep="" ):= nueva_col[ (3*last +1):(4*last) ]  ]
+}
 
 
 #----------

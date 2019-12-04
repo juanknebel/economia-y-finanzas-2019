@@ -538,7 +538,7 @@ agregar_canaritos <- function( pdataset,  pcanaritos_cantidad )
   vcanaritos <-  paste0( "canarito", 1:pcanaritos_cantidad )
 
   #uso esta semilla para los canaritos
-  set.seed(209789)
+  set.seed(10219)
 
   pdataset[ , (vcanaritos) := 0 ]
   pdataset[ , (vcanaritos) := lapply(.SD, runif), .SDcols = vcanaritos]
@@ -736,7 +736,7 @@ if( length(env$data$campos_a_borrar)>0 )  dataset_grande[ ,  (env$data$campos_a_
 
 
 #agrego variable para el undersampling
-set.seed(209743)
+set.seed(410551)
 dataset_grande[ ,  sample :=  runif( nrow(dataset_grande) )]
 
 #agrego las variables canarito

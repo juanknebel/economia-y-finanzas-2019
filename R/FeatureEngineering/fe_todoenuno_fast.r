@@ -280,15 +280,12 @@ colnames(dataset)
 
 #grabo el archivo completo
 #al  agregarle el .gz  al final del nombre del archivo,  data.table sabe que debe comprimir el archivo
-setwd( "~/" )
+setwd( kcarpeta_datasets )
 fwrite( dataset, 
         file= paste0(karchivo_salida_completo), 
         sep=kcampos_separador, 
         na="", 
         row.names=FALSE )
-
-system(  paste0("cp -r ", karchivo_salida_completo,  " ~/cloud/cloud1/datasets/") )
-system(  paste0("rm -r", karchivo_salida_completo ) )
 
 
 t100     <-  Sys.time()
